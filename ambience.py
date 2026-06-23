@@ -84,22 +84,28 @@ def gen_ocean():
 
 
 def gen_underwater():
-    """Very deep submerged pad - overwhelming low tones, muffled, enveloping."""
+    """Very deep submerged: an overwhelming all-pad wall. No drips, no noise."""
     out = [0.0] * N
-    freqs = [36.7, 55, 73.4, 110, 146.8]
+    freqs = [32.7, 49.0, 65.4, 82.4, 98.0, 130.8]   # low C chord cluster
+    voices = 3
     for i in range(N):
         t = i / SR
         s = 0.0
         for fi, f in enumerate(freqs):
-            d1 = 1 + 0.003 * math.sin(2 * math.pi * (0.03 + 0.011 * fi) * t + fi)
-            d2 = 1 - 0.004 * math.sin(2 * math.pi * (0.025 + 0.009 * fi) * t + fi * 1.3)
-            s += math.sin(2 * math.pi * f * d1 * t) + 0.8 * math.sin(2 * math.pi * f * d2 * t)
-        swell = 0.7 + 0.3 * math.sin(2 * math.pi * 0.03 * t)
-        out[i] = s / (len(freqs) * 1.8) * 0.85 * swell
-    rumble = _lowpass(_lowpass(_brown(), 0.01), 0.01)
+            for vv in range(voices):
+                det = 1 + 0.0035 * math.sin(2 * math.pi * (0.018 + 0.006 * fi + 0.004 * vv) * t + fi * 1.3 + vv)
+                amp = 0.6 + 0.4 * math.sin(2 * math.pi * (0.02 + 0.013 * fi) * t + vv)
+                s += amp * math.sin(2 * math.pi * f * det * t)
+        out[i] = s / (len(freqs) * voices)
+    # slow moving lowpass = "pressure" sweep, keeps it muffled and enveloping
+    swept = [0.0] * N
+    p = 0.0
     for i in range(N):
-        out[i] += rumble[i] * 0.35
-    return _lowpass(out, 0.2)        # heavy muffle, like deep water pressure
+        t = i / SR
+        a = 0.06 + 0.05 * (0.5 + 0.5 * math.sin(2 * math.pi * 0.015 * t))
+        p += a * (out[i] - p)
+        swept[i] = p * (0.85 + 0.15 * math.sin(2 * math.pi * 0.025 * t))
+    return swept
 
 
 def gen_rain():
