@@ -17,6 +17,7 @@ Public API:
 """
 
 import colorsys
+import select
 import socket
 import struct
 import time
@@ -142,33 +143,82 @@ class LifxLan:
 
     # -- discovery ---------------------------------------------------------
 
+    @staticmethod
+    def _local_ipv4s():
+        """All local IPv4 interface addresses (minus loopback)."""
+        ips = set()
+        try:
+            for info in socket.getaddrinfo(socket.gethostname(), None,
+                                           socket.AF_INET):
+                ips.add(info[4][0])
+        except OSError:
+            pass
+        return [ip for ip in ips if not ip.startswith("127.")]
+
+    def _discovery_sockets(self):
+        """One broadcast socket bound to each interface, with its broadcast dests.
+
+        Binding per-interface (rather than relying on the default route) is what
+        makes discovery work when a VPN/WireGuard tunnel owns the default route -
+        the 255.255.255.255 limited broadcast would otherwise leave via the VPN
+        and never reach the LAN. We also send the subnet-directed broadcast.
+        """
+        socks = []
+        for ip in self._local_ipv4s():
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                s.bind((ip, 0))
+            except OSError:
+                continue
+            directed = ".".join(ip.split(".")[:3] + ["255"])
+            socks.append((s, [directed, BROADCAST]))
+        return socks
+
     def discover(self, wait=1.2, rounds=3):
         """Broadcast for devices and return a list of Lights with live state.
 
-        UDP discovery is lossy and bulbs often miss the first request, so we
-        run several rounds and accumulate every device that answers in any of
-        them - this is what reliably surfaces every bulb on the network.
+        UDP discovery is lossy and bulbs often miss the first request, so we run
+        several rounds and accumulate every device that answers in any of them.
+        We broadcast from every local interface so the search still works with a
+        VPN active (see _discovery_sockets).
         """
+        socks = self._discovery_sockets()
+        if not socks:                       # fallback to the shared socket
+            socks = [(self.sock, [BROADCAST])]
+        readers = [s for s, _ in socks]
         found = {}
-        for _ in range(max(1, rounds)):
-            deadline = time.time() + wait
-            next_ping = 0.0
-            while time.time() < deadline:
-                now = time.time()
-                if now >= next_ping:
+        try:
+            for _ in range(max(1, rounds)):
+                for s, dests in socks:
                     pkt = _make_packet(MSG_GET_SERVICE, tagged=True,
                                        sequence=self._next_seq())
-                    self.sock.sendto(pkt, (BROADCAST, LIFX_PORT))
-                    next_ping = now + 0.25       # re-ping often for UDP loss
-                try:
-                    data, addr = self.sock.recvfrom(1024)
-                except socket.timeout:
-                    continue
-                _size, _src, target, _seq, mtype = _parse_header(data)
-                if mtype == MSG_STATE_SERVICE and len(data) >= 41:
-                    service, _port = struct.unpack_from("<BI", data, 36)
-                    if service == 1 and target not in found:   # 1 = UDP
-                        found[target] = Light(addr[0], target)
+                    for dest in dests:
+                        try:
+                            s.sendto(pkt, (dest, LIFX_PORT))
+                        except OSError:
+                            pass
+                deadline = time.time() + wait
+                while time.time() < deadline:
+                    ready, _, _ = select.select(readers, [], [], 0.2)
+                    for s in ready:
+                        try:
+                            data, addr = s.recvfrom(1024)
+                        except OSError:
+                            continue
+                        _s, _src, target, _seq, mtype = _parse_header(data)
+                        if mtype == MSG_STATE_SERVICE and len(data) >= 41:
+                            service, _port = struct.unpack_from("<BI", data, 36)
+                            if service == 1 and target not in found:   # 1 = UDP
+                                found[target] = Light(addr[0], target)
+        finally:
+            for s, _ in socks:
+                if s is not self.sock:
+                    try:
+                        s.close()
+                    except OSError:
+                        pass
 
         lights = list(found.values())
         for light in lights:
