@@ -18,6 +18,7 @@ import math
 import os
 import re
 import threading
+import time
 import tkinter as tk
 from tkinter import colorchooser, ttk
 
@@ -27,6 +28,7 @@ except Exception:                   # noqa: BLE001 - missing lib or libvlc
     vlc = None
 
 import art
+import effects
 import lifx_lan
 import scenes
 from lifx_lan import hsbk_to_rgb
@@ -101,6 +103,58 @@ def flat_button(master, text, command, bg=PANEL_HI, fg=TEXT):
 
 def section_label(master, text):
     return tk.Label(master, text=text.upper(), bg=BG, fg=MUTED, font=F_CAP)
+
+
+def blend_hex(c1, c2, t):
+    """Linear blend between two #rrggbb colours, t in 0..1."""
+    a = tuple(int(c1[i:i + 2], 16) for i in (1, 3, 5))
+    b = tuple(int(c2[i:i + 2], 16) for i in (1, 3, 5))
+    return "#" + "".join(f"{int(a[i] + (b[i] - a[i]) * t):02x}" for i in range(3))
+
+
+# --------------------------------------------------------------------------
+# Shared animation ticker (drives all UI motion from one ~30fps loop)
+# --------------------------------------------------------------------------
+
+class Animator:
+    def __init__(self, root):
+        self.root = root
+        self.jobs = []
+        self._running = False
+
+    def add(self, fn):
+        """fn(now) -> True to keep animating, False when finished."""
+        self.jobs.append(fn)
+        if not self._running:
+            self._running = True
+            self._tick()
+
+    def _tick(self):
+        now = time.perf_counter()
+        kept = []
+        for fn in self.jobs:
+            try:
+                if fn(now):
+                    kept.append(fn)
+            except tk.TclError:
+                pass                             # widget was destroyed
+        self.jobs = kept
+        if self.jobs:
+            self.root.after(33, self._tick)
+        else:
+            self._running = False
+
+
+_ANIMATOR = None
+
+
+def animate(fn):
+    if _ANIMATOR is not None:
+        _ANIMATOR.add(fn)
+
+
+def _ease(p):
+    return 1 - (1 - p) ** 3                       # ease-out cubic
 
 
 def scene_image_path(name):
@@ -204,9 +258,25 @@ class Knob(tk.Canvas):
     def get(self):
         return self._value
 
-    def set(self, v):
-        self._value = max(self.vmin, min(self.vmax, v))
-        self._redraw()
+    def set(self, v, animate_to=False):
+        v = max(self.vmin, min(self.vmax, v))
+        self._gen = getattr(self, "_gen", 0) + 1
+        if not animate_to or abs(v - self._value) < 0.5:
+            self._value = v
+            self._redraw()
+            return
+        gen = self._gen
+        start = self._value
+        t0 = time.perf_counter()
+
+        def step(now):
+            if gen != self._gen:
+                return False                     # superseded by a newer set
+            p = min(1.0, (now - t0) / 0.35)
+            self._value = start + (v - start) * _ease(p)
+            self._redraw()
+            return p < 1.0
+        animate(step)
 
 
 class SceneTile(tk.Canvas):
@@ -227,11 +297,12 @@ class SceneTile(tk.Canvas):
         self._img = None
         self._hover = None
         self._busy = None
+        self._hovering = False
         self._load_image()
         self._render()
         self.bind("<Enter>", self._enter)
         self.bind("<Leave>", self._leave)
-        self.bind("<Button-1>", lambda e: self.command(self.scene))
+        self.bind("<Button-1>", lambda e: (self.flash(), self.command(self.scene)))
         if reroll is not None:
             self.bind("<Button-3>", lambda e: self.reroll(self))
 
@@ -273,15 +344,60 @@ class SceneTile(tk.Canvas):
         else:
             self._render()
 
-    def _enter(self, _e):
+    def _set_border(self, color):
         if self._hover is None:
             self._hover = self.create_rectangle(1, 1, self.W - 1, self.H - 1,
-                                                outline="#ffffff", width=2)
+                                                outline=color, width=2)
+        else:
+            self.itemconfigure(self._hover, outline=color)
+
+    def _enter(self, _e):
+        self._hovering = True
+        t0 = time.perf_counter()
+
+        def step(now):
+            if not self._hovering:
+                return False
+            p = min(1.0, (now - t0) / 0.15)
+            self._set_border(blend_hex(STROKE, "#ffffff", _ease(p)))
+            return p < 1.0
+        animate(step)
 
     def _leave(self, _e):
-        if self._hover:
-            self.delete(self._hover)
-            self._hover = None
+        self._hovering = False
+        if self._hover is None:
+            return
+        t0 = time.perf_counter()
+
+        def step(now):
+            if self._hovering or self._hover is None:
+                return False
+            p = min(1.0, (now - t0) / 0.15)
+            self._set_border(blend_hex("#ffffff", BG, _ease(p)))
+            if p >= 1.0:
+                self.delete(self._hover)
+                self._hover = None
+                return False
+            return True
+        animate(step)
+
+    def flash(self):
+        """Brief white pulse, e.g. when the scene is applied."""
+        item = self.create_rectangle(1, 1, self.W - 1, self.H - 1,
+                                     outline="#ffffff", width=3)
+        t0 = time.perf_counter()
+
+        def step(now):
+            p = min(1.0, (now - t0) / 0.5)
+            try:
+                self.itemconfigure(item, outline=blend_hex("#ffffff", BG, _ease(p)))
+                if p >= 1.0:
+                    self.delete(item)
+                    return False
+            except tk.TclError:
+                return False
+            return True
+        animate(step)
 
 
 class LightCard(tk.Frame):
@@ -348,8 +464,8 @@ class LightCard(tk.Frame):
     def refresh_widgets(self):
         self.name_lbl.config(text=self.light.label or self.light.serial)
         self.toggle.set(self.light.power)
-        self.bri.set(self.light.brightness_pct)
-        self.white.set(max(2500, min(9000, self.light.hsbk[3])))
+        self.bri.set(self.light.brightness_pct, animate_to=True)
+        self.white.set(max(2500, min(9000, self.light.hsbk[3])), animate_to=True)
         self._paint_swatch()
 
     def _paint_swatch(self):
@@ -363,22 +479,26 @@ class LightCard(tk.Frame):
     # -- actions (network on a background thread) --------------------------
 
     def _toggle(self, on):
+        self.app._clear_motion()
         run_bg(self.app.root, lambda: self.app.lan.set_power(self.light, on),
                lambda _r, e: self._done(e))
 
     def _commit_bri(self, v):
+        self.app._clear_motion()
         pct = int(v)
         run_bg(self.app.root,
                lambda: self.app.lan.set_brightness(self.light, pct),
                lambda _r, e: self._done(e))
 
     def _commit_white(self, v):
+        self.app._clear_motion()
         k, pct = int(v), int(self.bri.get())
         run_bg(self.app.root,
                lambda: self.app.lan.set_white(self.light, pct, k),
                lambda _r, e: self._done(e))
 
     def apply_rgb(self, r, g, b):
+        self.app._clear_motion()
         run_bg(self.app.root,
                lambda: self.app.lan.set_rgb(self.light, r, g, b),
                lambda _r, e: self._done(e))
@@ -396,32 +516,54 @@ class LightCard(tk.Frame):
 
 
 class Toggle(tk.Canvas):
-    """An iOS-style sliding on/off switch."""
+    """An iOS-style sliding on/off switch with an animated knob."""
+
+    OFF = "#39404f"
 
     def __init__(self, master, value=False, command=None, bg=PANEL):
         super().__init__(master, width=48, height=26, bg=bg,
                          highlightthickness=0, bd=0, cursor="hand2")
         self._on = bool(value)
+        self._pos = 1.0 if self._on else 0.0
         self.command = command
         self.bind("<Button-1>", self._click)
-        self._redraw()
+        self._draw()
 
-    def _redraw(self):
+    def _draw(self):
         self.delete("all")
         round_rect(self, 3, 4, 45, 22, 9,
-                   fill=GREEN if self._on else "#39404f", outline="")
-        kx = 35 if self._on else 13
+                   fill=blend_hex(self.OFF, GREEN, self._pos), outline="")
+        kx = 13 + 22 * self._pos
         self.create_oval(kx - 8, 5, kx + 8, 21, fill="#ffffff", outline="")
+
+    def _animate_to(self, target):
+        self._gen = getattr(self, "_gen", 0) + 1
+        gen = self._gen
+        start = self._pos
+        t0 = time.perf_counter()
+
+        def step(now):
+            if gen != self._gen:
+                return False
+            p = min(1.0, (now - t0) / 0.18)
+            self._pos = start + (target - start) * _ease(p)
+            self._draw()
+            return p < 1.0
+        animate(step)
 
     def _click(self, _e):
         self._on = not self._on
-        self._redraw()
+        self._animate_to(1.0 if self._on else 0.0)
         if self.command:
             self.command(self._on)
 
     def set(self, v):
-        self._on = bool(v)
-        self._redraw()
+        v = bool(v)
+        target = 1.0 if v else 0.0
+        if v == self._on and abs(self._pos - target) < 1e-3:
+            return
+        self._on = v
+        self._animate_to(target)
 
     def get(self):
         return self._on
@@ -497,26 +639,82 @@ class Ambience:
             self.stop()
 
 
+class LightDriver:
+    """Runs a frame function against the bulbs on a background thread.
+
+    Powers the live light effects and screen-sync. Only one runs at a time; the
+    frame function is called ~fps times/sec and streams colours to every bulb.
+    """
+
+    def __init__(self, app):
+        self.app = app
+        self.mode = None
+        self._thread = None
+        self._stop = threading.Event()
+
+    def start(self, mode, frame_fn, fps=10, capture_base=False, speed_fn=None):
+        self.stop()
+        lights = [c.light for c in self.app.cards]
+        if not lights:
+            return False
+        st = {}
+        if capture_base:
+            st["base"] = {l.target: l.hsbk for l in lights}
+        self._stop.clear()
+        self.mode = mode
+        interval = 1.0 / max(1, fps)
+        get_speed = speed_fn or (lambda: 1.0)
+
+        def run():
+            prev = time.perf_counter()
+            et = 0.0                              # speed-scaled "effect time"
+            while not self._stop.is_set():
+                now = time.perf_counter()
+                et += (now - prev) * get_speed()
+                prev = now
+                try:
+                    frame_fn(self.app.lan, lights, et, st)
+                except Exception:               # noqa: BLE001 - keep looping
+                    pass
+                self._stop.wait(interval)
+        self._thread = threading.Thread(target=run, daemon=True)
+        self._thread.start()
+        return True
+
+    def stop(self):
+        self._stop.set()
+        th = self._thread
+        if th and th.is_alive() and th is not threading.current_thread():
+            th.join(timeout=1.0)
+        self._thread = None
+        self.mode = None
+
+
 # --------------------------------------------------------------------------
 # Application
 # --------------------------------------------------------------------------
 
 class App:
     def __init__(self, root):
+        global _ANIMATOR
+        _ANIMATOR = Animator(root)
         self.root = root
         self.lan = lifx_lan.LifxLan()
         self.audio = Ambience()
+        self.driver = LightDriver(self)
+        self.speed = 1.0
         self.cards = []
         self.tiles = []
 
         root.title("LIFX Control")
         root.configure(bg=BG)
-        root.geometry("544x820")
+        root.geometry("544x884")
         root.minsize(496, 560)
 
         self._init_style()
         self._build_toolbar()
         self._build_master()
+        self._build_motion()
         self._build_scroll()
         self._build_scenes()
 
@@ -577,6 +775,95 @@ class App:
         tk.Label(vbox, text="VOLUME", bg=PANEL_HI, fg=MUTED,
                  font=F_CAP).pack(pady=(2, 0))
 
+    def _build_motion(self):
+        self._motion_btns = {}
+        box = tk.Frame(self.root, bg=BG)
+        box.pack(fill="x", padx=16, pady=(8, 0))
+
+        # speed knob (controls effect timeline; live)
+        sbox = tk.Frame(box, bg=BG)
+        sbox.pack(side="left", padx=(0, 16))
+        self.speed_knob = Knob(sbox, size=56, value=100, vmin=25, vmax=300,
+                               accent=ACCENT, bg=BG, command=self._set_speed,
+                               fmt=lambda v: f"{v / 100:.1f}x")
+        self.speed_knob.pack()
+        tk.Label(sbox, text="SPEED", bg=BG, fg=MUTED, font=F_CAP).pack(pady=(2, 0))
+
+        right = tk.Frame(box, bg=BG)
+        right.pack(side="left", fill="x", expand=True)
+        r1 = tk.Frame(right, bg=BG)
+        r1.pack(fill="x")
+        section_label(r1, "Effects").pack(side="left", pady=4)
+        bc1 = tk.Frame(r1, bg=BG)
+        bc1.pack(side="right")
+        for label, mode in [("Breathe", "breathe"), ("Flow", "flow"),
+                            ("Flicker", "flicker"), ("Strobe", "strobe")]:
+            b = flat_button(bc1, label, lambda m=mode: self._toggle_effect(m))
+            b.pack(side="left", padx=3)
+            self._motion_btns[mode] = b
+
+        r2 = tk.Frame(right, bg=BG)
+        r2.pack(fill="x", pady=(6, 0))
+        section_label(r2, "Screen Sync").pack(side="left", pady=4)
+        bc2 = tk.Frame(r2, bg=BG)
+        bc2.pack(side="right")
+        for label, mode in [("Complement", "complement"), ("Augment", "augment")]:
+            b = flat_button(bc2, label, lambda m=mode: self._toggle_sync(m))
+            b.pack(side="left", padx=3)
+            self._motion_btns[mode] = b
+        flat_button(bc2, "Off", self._end_motion).pack(side="left", padx=(10, 0))
+
+    def _set_speed(self, v):
+        self.speed = max(0.05, v / 100.0)
+
+    # -- motion (effects + screen sync) -----------------------------------
+
+    def _toggle_effect(self, mode):
+        if self.driver.mode == mode:
+            self._end_motion()
+            return
+        if not self.cards:
+            self.set_status("No lights yet — hit Discover.", error=True)
+            return
+        fps = 12 if mode in ("flicker", "strobe") else 10
+        if self.driver.start(mode, effects.EFFECTS[mode], fps=fps,
+                             capture_base=mode in effects.NEEDS_BASE,
+                             speed_fn=lambda: self.speed):
+            self._highlight_motion(mode)
+            self.set_status(f"Effect: {mode.capitalize()}")
+
+    def _toggle_sync(self, mode):
+        if self.driver.mode == mode:
+            self._end_motion()
+            return
+        if not self.cards:
+            self.set_status("No lights yet — hit Discover.", error=True)
+            return
+        if self.driver.start(mode, effects.SYNC[mode], fps=8,
+                             speed_fn=lambda: self.speed):
+            self._highlight_motion(mode)
+            self.set_status(f"Screen sync: {mode.capitalize()} "
+                            f"— matching your screen…")
+
+    def _highlight_motion(self, active):
+        for mode, btn in self._motion_btns.items():
+            on = mode == active
+            btn.config(bg=ACCENT_DK if on else PANEL_HI,
+                       fg="#ffffff" if on else TEXT)
+
+    def _clear_motion(self):
+        """Stop any running effect/sync (called before manual/scene control)."""
+        if self.driver.mode is not None:
+            self.driver.stop()
+            self._highlight_motion(None)
+
+    def _end_motion(self):
+        self.driver.stop()
+        self._highlight_motion(None)
+        for c in self.cards:
+            c.refresh_widgets()
+        self.set_status("Motion stopped.")
+
     def _build_scroll(self):
         wrap = tk.Frame(self.root, bg=BG)
         wrap.pack(fill="both", expand=True, padx=10, pady=10)
@@ -628,6 +915,7 @@ class App:
     # -- discovery ---------------------------------------------------------
 
     def discover(self):
+        self._clear_motion()
         self.refresh_btn.config(state="disabled")
         self.set_status("Discovering lights on the LAN …")
         run_bg(self.root, self.lan.discover, self._on_discovered)
@@ -657,13 +945,14 @@ class App:
             card.pack(fill="x", padx=6, pady=6)
             self.cards.append(card)
         avg = round(sum(l.brightness_pct for l in lights) / len(lights))
-        self.master.set(avg)
+        self.master.set(avg, animate_to=True)
         self.set_status(f"Found {len(lights)} "
                         f"light{'s' if len(lights) != 1 else ''}.")
 
     # -- scene / master actions -------------------------------------------
 
     def apply_scene(self, scene):
+        self._clear_motion()
         if not self.cards:
             self.set_status("No lights yet — hit Discover.", error=True)
             return
@@ -712,6 +1001,7 @@ class App:
         run_bg(self.root, work, done)
 
     def all_power(self, on):
+        self._clear_motion()
         if not self.cards:
             self.set_status("No lights yet — hit Discover.", error=True)
             return
@@ -730,6 +1020,7 @@ class App:
         run_bg(self.root, work, done)
 
     def _commit_master(self, v):
+        self._clear_motion()
         if not self.cards:
             return
         pct = int(v)
@@ -746,6 +1037,7 @@ class App:
         run_bg(self.root, work, done)
 
     def _on_close(self):
+        self.driver.stop()
         self.audio.stop()
         self.lan.close()
         self.root.destroy()

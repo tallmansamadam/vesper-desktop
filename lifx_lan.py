@@ -302,6 +302,14 @@ class LifxLan:
         bri = int(max(0, min(100, pct)) / 100 * 65535)
         self.set_color(light, 0, 0, bri, kelvin, duration_ms)
 
+    def stream_color(self, light, hue, sat, bri, kelvin, duration_ms=250):
+        """Single-send SetColor for real-time animation / screen-sync streaming."""
+        kelvin = max(KELVIN_MIN, min(KELVIN_MAX, int(kelvin)))
+        payload = struct.pack("<BHHHHI", 0, hue & 0xFFFF, sat & 0xFFFF,
+                              bri & 0xFFFF, kelvin, duration_ms)
+        self._send(light, MSG_SET_COLOR, payload, sends=1)
+        light.hsbk = (hue & 0xFFFF, sat & 0xFFFF, bri & 0xFFFF, kelvin)
+
 
 # --------------------------------------------------------------------------
 # CLI smoke test:  python lifx_lan.py
