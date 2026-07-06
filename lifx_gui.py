@@ -177,13 +177,14 @@ class Knob(tk.Canvas):
     START = 225          # degrees (Tk: 0=east, CCW+); lower-left
 
     def __init__(self, master, size=66, value=0, vmin=0, vmax=100,
-                 accent=ACCENT, command=None, fmt=None, bg=PANEL):
+                 accent=ACCENT, command=None, fmt=None, bg=PANEL, default=100):
         super().__init__(master, width=size, height=size, bg=bg,
                          highlightthickness=0, bd=0, cursor="hand2")
         self.size = size
         self.vmin, self.vmax = vmin, vmax
         self.accent, self.command = accent, command
         self.fmt = fmt or (lambda v: f"{int(v)}")
+        self.default = default
         self._value = value
         self._drag_y = None
         self._drag_v = None
@@ -191,6 +192,7 @@ class Knob(tk.Canvas):
         self.bind("<Button-1>", self._press)
         self.bind("<B1-Motion>", self._motion)
         self.bind("<ButtonRelease-1>", self._release)
+        self.bind("<Double-Button-1>", self._reset)
         self.bind("<MouseWheel>", self._wheel)
         self._redraw()
 
@@ -243,6 +245,14 @@ class Knob(tk.Canvas):
         self._drag_y = None
         if self.command:
             self.command(self._value)
+
+    def _reset(self, _e):
+        """Double-click: snap back to this knob's default value."""
+        self._drag_y = None
+        self.set(self.default, animate_to=True)
+        if self.command:
+            self.command(self.default)
+        return "break"
 
     def _wheel(self, e):
         step = (self.vmax - self.vmin) * 0.04
@@ -441,7 +451,7 @@ class LightCard(tk.Frame):
         wbox.pack(side="left")
         self.white = Knob(wbox, value=light.hsbk[3], vmin=2500, vmax=9000,
                           accent=WARM, command=self._commit_white,
-                          fmt=lambda v: f"{int(v)}K")
+                          fmt=lambda v: f"{int(v)}K", default=3500)
         self.white.pack()
         tk.Label(wbox, text="WHITE", bg=PANEL, fg=MUTED, font=F_CAP).pack()
 

@@ -26,8 +26,12 @@ def _hsbk(h, s, v, kelvin=3500):
 # Light effects
 # --------------------------------------------------------------------------
 
+# Every effect works from st["base"] - each bulb's colour/brightness when the
+# effect started (i.e. the presently selected scene) - and treats that
+# brightness as the ceiling. Effects never impose their own palette.
+
 def breathe(lan, lights, t, st):
-    """Smoothly fade every bulb's brightness up and down around its colour."""
+    """Fade brightness up to each bulb's set level and back down, keeping colour."""
     m = 0.12 + 0.88 * (0.5 - 0.5 * math.cos(2 * math.pi * t / 6.0))
     for light in lights:
         h, s, b, k = st["base"][light.target]
@@ -35,35 +39,34 @@ def breathe(lan, lights, t, st):
 
 
 def flow(lan, lights, t, st):
-    """Rainbow hue that flows through the spectrum, offset per bulb."""
-    n = max(1, len(lights))
-    for i, light in enumerate(lights):
-        hue = (t * 0.05 + i / n) % 1.0
-        lan.stream_color(light, *_hsbk(hue, 1.0, 0.85), duration_ms=320)
+    """Rotate each bulb's current hue through the wheel, keeping its brightness."""
+    shift = int(t * 0.08 * 65535)
+    for light in lights:
+        h, s, b, k = st["base"][light.target]
+        lan.stream_color(light, (h + shift) & 0xFFFF, s, b, k, duration_ms=300)
 
 
 def flicker(lan, lights, t, st):
-    """Warm candle/fire flicker (re-rolls on a speed-scaled interval)."""
+    """Flicker each bulb's current colour (brightness never above its set level)."""
     if t - st.get("ft", -1.0) < 0.09:
         return                                  # gate by effect-time so SPEED applies
     st["ft"] = t
     for light in lights:
-        v = random.uniform(0.45, 1.0)
-        hue = random.uniform(0.03, 0.09)
-        s = random.uniform(0.7, 0.95)
-        lan.stream_color(light, *_hsbk(hue, s, v, 1800), duration_ms=110)
+        h, s, b, k = st["base"][light.target]
+        lan.stream_color(light, h, s, int(b * random.uniform(0.45, 1.0)), k,
+                         duration_ms=110)
 
 
 def strobe(lan, lights, t, st):
-    """Hard on/off strobe on each bulb's current colour."""
+    """Hard on/off strobe on each bulb's current colour and brightness."""
     on = int(t * 8) % 2 == 0
     for light in lights:
-        h, s, _b, k = st["base"][light.target]
-        lan.stream_color(light, h, s, 65535 if on else 0, k, duration_ms=30)
+        h, s, b, k = st["base"][light.target]
+        lan.stream_color(light, h, s, b if on else 0, k, duration_ms=30)
 
 
 EFFECTS = {"breathe": breathe, "flow": flow, "flicker": flicker, "strobe": strobe}
-NEEDS_BASE = {"breathe", "strobe"}
+NEEDS_BASE = set(EFFECTS)                        # all effects use current colours
 
 
 # --------------------------------------------------------------------------
