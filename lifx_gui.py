@@ -849,7 +849,7 @@ class App:
         if not self.cards:
             self.set_status("No lights yet — hit Discover.", error=True)
             return
-        if self.driver.start(mode, effects.SYNC[mode], fps=8,
+        if self.driver.start(mode, effects.SYNC[mode], fps=12,
                              speed_fn=lambda: self.speed):
             self._highlight_motion(mode)
             self.set_status(f"Screen sync: {mode.capitalize()} "

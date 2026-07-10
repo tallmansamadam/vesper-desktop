@@ -38,12 +38,28 @@ def breathe(lan, lights, t, st):
         lan.stream_color(light, h, s, int(b * m), k, duration_ms=260)
 
 
+def _lerp_hsbk(a, b, f):
+    dh = ((b[0] - a[0] + 32768) % 65536) - 32768        # shortest hue path
+    hue = (a[0] + int(dh * f)) & 0xFFFF
+    return (hue, int(a[1] + (b[1] - a[1]) * f),
+            int(a[2] + (b[2] - a[2]) * f), int(a[3] + (b[3] - a[3]) * f))
+
+
 def flow(lan, lights, t, st):
-    """Rotate each bulb's current hue through the wheel, keeping its brightness."""
-    shift = int(t * 0.08 * 65535)
-    for light in lights:
-        h, s, b, k = st["base"][light.target]
-        lan.stream_color(light, (h + shift) & 0xFFFF, s, b, k, duration_ms=300)
+    """Flow the scene's own colours across the bulbs (no full-wheel cycling).
+
+    Each bulb eases between the colours currently present across the lights, so
+    the effect stays within the selected scene/theme instead of the rainbow.
+    """
+    palette = [st["base"][light.target] for light in lights]
+    n = len(palette)
+    if n == 0:
+        return
+    for i, light in enumerate(lights):
+        p = t * 0.2 + i
+        i0 = int(p) % n
+        c = _lerp_hsbk(palette[i0], palette[(i0 + 1) % n], p - int(p))
+        lan.stream_color(light, c[0], c[1], c[2], c[3], duration_ms=300)
 
 
 def flicker(lan, lights, t, st):
@@ -93,14 +109,26 @@ def sample_screen():
     return hue, ss / ws, vs / ws
 
 
-def _push(lan, lights, hue, sat, val, st):
-    key = (round(hue, 2), round(sat, 2), round(val, 2))
+def _push(lan, lights, hue, sat, val, st, ease=0.4):
+    # Ease the target toward the sampled colour (exponential smoothing) so screen
+    # motion flows instead of jumping. `ease` per frame: higher = snappier/less
+    # lag, lower = smoother. Hue eases along the shortest path around the wheel.
+    ph, ps, pv = st.get("h"), st.get("s"), st.get("v")
+    if ph is None:
+        sh, ss, sv = hue, sat, val
+    else:
+        dh = ((hue - ph + 0.5) % 1.0) - 0.5
+        sh = (ph + dh * ease) % 1.0
+        ss = ps + (sat - ps) * ease
+        sv = pv + (val - pv) * ease
+    st["h"], st["s"], st["v"] = sh, ss, sv
+    key = (round(sh, 3), round(ss, 3), round(sv, 3))
     if key == st.get("last"):
-        return                                  # skip tiny changes, save traffic
+        return                                  # settled - nothing to send
     st["last"] = key
-    h, s, b, k = _hsbk(hue, sat, val)
+    h, s, b, k = _hsbk(sh, ss, sv)
     for light in lights:
-        lan.stream_color(light, h, s, b, k, duration_ms=350)
+        lan.stream_color(light, h, s, b, k, duration_ms=220)
 
 
 def screen_complement(lan, lights, t, st):
