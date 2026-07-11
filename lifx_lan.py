@@ -96,12 +96,15 @@ def hsbk_to_rgb(hue, sat, bri, kelvin=3500):
 class Light:
     """A single discovered LIFX device and its last-known state."""
 
+    vendor = "LIFX"
+
     def __init__(self, ip, target, label="", power=False, hsbk=None):
         self.ip = ip
         self.target = target            # 64-bit serial (MAC) used as address
         self.label = label
         self.power = power
         self.hsbk = hsbk or (0, 0, 0, 3500)
+        self.provider = None            # set by the owning controller/provider
 
     @property
     def serial(self):
@@ -222,6 +225,7 @@ class LifxLan:
 
         lights = list(found.values())
         for light in lights:
+            light.provider = self
             self.refresh(light)
         lights.sort(key=lambda l: l.label.lower())
         return lights

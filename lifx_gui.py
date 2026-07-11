@@ -28,6 +28,7 @@ except Exception:                   # noqa: BLE001 - missing lib or libvlc
     vlc = None
 
 import art
+import devices
 import effects
 import lifx_lan
 import scenes
@@ -432,8 +433,9 @@ class LightCard(tk.Frame):
         self.name_lbl = tk.Label(meta, text=light.label, bg=PANEL, fg=TEXT,
                                  font=F_CARD, anchor="w")
         self.name_lbl.pack(anchor="w")
-        self.sub_lbl = tk.Label(meta, text=light.ip, bg=PANEL, fg=MUTED,
-                                font=F_SMALL, anchor="w")
+        vendor = getattr(light, "vendor", "")
+        self.sub_lbl = tk.Label(meta, text=f"{vendor} · {light.ip}", bg=PANEL,
+                                fg=MUTED, font=F_SMALL, anchor="w")
         self.sub_lbl.pack(anchor="w")
         self.toggle = Toggle(head, value=light.power, command=self._toggle)
         self.toggle.pack(side="right")
@@ -709,7 +711,7 @@ class App:
         global _ANIMATOR
         _ANIMATOR = Animator(root)
         self.root = root
-        self.lan = lifx_lan.LifxLan()
+        self.lan = devices.MultiController()
         self.audio = Ambience()
         self.driver = LightDriver(self)
         self.speed = 1.0
@@ -756,6 +758,7 @@ class App:
                     bg=ACCENT_DK, fg="#ffffff").pack(side="right")
         self.sound_btn = flat_button(bar, "Sound: On", self._toggle_sound)
         self.sound_btn.pack(side="right", padx=6)
+        flat_button(bar, "+ Hue", self.pair_hue).pack(side="right", padx=(0, 6))
         self.status = tk.Label(self.root, text="Ready.", bg=BG, fg=MUTED,
                                font=F_LABEL, anchor="w")
         self.status.pack(fill="x", padx=18)
@@ -985,6 +988,29 @@ class App:
         on = not self.audio.enabled
         self.audio.set_enabled(on)
         self.sound_btn.config(text=f"Sound: {'On' if on else 'Off'}")
+
+    def pair_hue(self):
+        if not self.lan.hue_available():
+            self.set_status("Hue support unavailable.", error=True)
+            return
+        self.set_status("Finding Hue bridge — press its round button now …")
+
+        def work():
+            return self.lan.add_hue(
+                on_wait=lambda rem: self.root.after(
+                    0, lambda: self.set_status(
+                        f"Press the Hue bridge button … {rem}s")))
+
+        def done(ok, e):
+            if e:
+                self.set_status(f"Hue pairing error: {e}", error=True)
+            elif ok:
+                self.set_status("Hue bridge paired — re-discovering …")
+                self.discover()
+            else:
+                self.set_status("Hue pairing timed out. Press the bridge "
+                                "button and hit + Hue again.", error=True)
+        run_bg(self.root, work, done)
 
     def _set_volume(self, v):
         self.audio.set_volume(v)

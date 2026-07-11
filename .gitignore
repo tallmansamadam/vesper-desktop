@@ -2,3 +2,4 @@ __pycache__/
 *.pyc
 _gui_*.log
 _pick.py
+hue.json
