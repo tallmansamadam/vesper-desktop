@@ -40,8 +40,8 @@ class MultiController:
         lights.sort(key=lambda l: (getattr(l, "vendor", ""), l.label.lower()))
         return lights
 
-    def set_power(self, light, on, **kw):
-        light.provider.set_power(light, on, **kw)
+    def set_power(self, light, *a, **kw):
+        light.provider.set_power(light, *a, **kw)
 
     def set_color(self, light, *a, **kw):
         light.provider.set_color(light, *a, **kw)
