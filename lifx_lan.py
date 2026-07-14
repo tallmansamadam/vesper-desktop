@@ -20,6 +20,7 @@ import colorsys
 import select
 import socket
 import struct
+import threading
 import time
 
 LIFX_PORT = 56700
@@ -32,6 +33,7 @@ MSG_GET = 101  # GetColor
 MSG_STATE = 107  # State (HSBK + power + label)
 MSG_SET_COLOR = 102
 MSG_SET_POWER = 117  # light SetPower
+MSG_ACK = 45         # Acknowledgement (when ack_required is set)
 
 KELVIN_MIN = 1500
 KELVIN_MAX = 9000
@@ -133,6 +135,7 @@ class LifxLan:
         self.sock.bind(("", 0))
         self.sock.settimeout(timeout)
         self._seq = 0
+        self._rx = threading.Lock()     # serialise reply/ack waits on the socket
 
     def close(self):
         try:
@@ -233,29 +236,37 @@ class LifxLan:
     # -- low-level send ----------------------------------------------------
 
     def _send(self, light, msg_type, payload=b"", res_type=None,
-              retries=3, sends=2):
-        """Send a packet. If res_type is set, wait for a matching reply."""
+              ack=False, retries=3, sends=2):
+        """Send a packet.
+
+        - res_type set: wait for that reply type (e.g. State) and return it.
+        - ack=True: wait for an Acknowledgement, retrying on loss (reliable
+          one-shot commands so every bulb actually gets it).
+        - otherwise: fire-and-forget, sent a couple of times.
+        """
         seq = self._next_seq()
         pkt = _make_packet(msg_type, payload, target=light.target,
-                           res_required=bool(res_type), sequence=seq)
+                           res_required=bool(res_type), ack_required=ack,
+                           sequence=seq)
 
-        if res_type is None:
-            # Fire-and-forget: send a couple of times to survive UDP loss.
+        if res_type is None and not ack:
             for _ in range(sends):
                 self.sock.sendto(pkt, (light.ip, LIFX_PORT))
             return None
 
-        for _ in range(retries):
-            self.sock.sendto(pkt, (light.ip, LIFX_PORT))
-            deadline = time.time() + self.sock.gettimeout()
-            while time.time() < deadline:
-                try:
-                    data, _addr = self.sock.recvfrom(1024)
-                except socket.timeout:
-                    break
-                _s, _src, target, rseq, mtype = _parse_header(data)
-                if mtype == res_type and rseq == seq and target == light.target:
-                    return data
+        want = res_type if res_type is not None else MSG_ACK
+        with self._rx:
+            for _ in range(retries):
+                self.sock.sendto(pkt, (light.ip, LIFX_PORT))
+                deadline = time.time() + self.sock.gettimeout()
+                while time.time() < deadline:
+                    try:
+                        data, _addr = self.sock.recvfrom(1024)
+                    except socket.timeout:
+                        break
+                    _s, _src, target, rseq, mtype = _parse_header(data)
+                    if mtype == want and rseq == seq and target == light.target:
+                        return data
         return None
 
     # -- reads -------------------------------------------------------------
@@ -277,7 +288,7 @@ class LifxLan:
 
     def set_power(self, light, on, duration_ms=400):
         payload = struct.pack("<HI", 65535 if on else 0, duration_ms)
-        self._send(light, MSG_SET_POWER, payload)
+        self._send(light, MSG_SET_POWER, payload, ack=True)   # confirmed
         light.power = bool(on)
 
     def set_color(self, light, hue, sat, bri, kelvin, duration_ms=400):
@@ -285,7 +296,7 @@ class LifxLan:
         payload = struct.pack("<BHHHHI", 0,
                               hue & 0xFFFF, sat & 0xFFFF, bri & 0xFFFF,
                               kelvin, duration_ms)
-        self._send(light, MSG_SET_COLOR, payload)
+        self._send(light, MSG_SET_COLOR, payload, ack=True)   # confirmed
         light.hsbk = (hue & 0xFFFF, sat & 0xFFFF, bri & 0xFFFF, kelvin)
 
     def set_brightness(self, light, pct, duration_ms=300):
