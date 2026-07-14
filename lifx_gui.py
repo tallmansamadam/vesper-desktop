@@ -759,6 +759,8 @@ class App:
         self.sound_btn = flat_button(bar, "Sound: On", self._toggle_sound)
         self.sound_btn.pack(side="right", padx=6)
         flat_button(bar, "+ Hue", self.pair_hue).pack(side="right", padx=(0, 6))
+        flat_button(bar, "+ Nanoleaf", self.pair_nanoleaf).pack(
+            side="right", padx=(0, 6))
         self.status = tk.Label(self.root, text="Ready.", bg=BG, fg=MUTED,
                                font=F_LABEL, anchor="w")
         self.status.pack(fill="x", padx=18)
@@ -1010,6 +1012,29 @@ class App:
             else:
                 self.set_status("Hue pairing timed out. Press the bridge "
                                 "button and hit + Hue again.", error=True)
+        run_bg(self.root, work, done)
+
+    def pair_nanoleaf(self):
+        self.set_status("Hold the Nanoleaf power button 5-7s until the LEDs "
+                        "flash, then keep holding on …")
+
+        def work():
+            return self.lan.add_nanoleaf(
+                on_wait=lambda rem: self.root.after(
+                    0, lambda: self.set_status(
+                        f"Waiting for Nanoleaf pairing mode … {rem}s")))
+
+        def done(count, e):
+            if e:
+                self.set_status(f"Nanoleaf pairing error: {e}", error=True)
+            elif count:
+                self.set_status(f"Paired {count} Nanoleaf device"
+                                f"{'s' if count != 1 else ''} — re-discovering …")
+                self.discover()
+            else:
+                self.set_status("No Nanoleaf paired. Hold its power button "
+                                "5-7s (LEDs flash), then hit + Nanoleaf.",
+                                error=True)
         run_bg(self.root, work, done)
 
     def _set_volume(self, v):

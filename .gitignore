@@ -3,3 +3,4 @@ __pycache__/
 _gui_*.log
 _pick.py
 hue.json
+nanoleaf.json
