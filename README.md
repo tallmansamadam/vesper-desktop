@@ -1,5 +1,7 @@
 # LumeDial — desktop
 
+<img src="branding/lumedial_sweep.gif" width="180" alt="LumeDial dial sweeping up through the spectrum">
+
 A dark, dial-driven desktop app for controlling smart lights over your **local
 network** — no cloud account, no API tokens, no internet. Six brands behind one
 vendor abstraction, driven by scenes, live effects and screen-sync.
