@@ -1,17 +1,21 @@
 """
-lifx_gui.py - Slick dark-themed desktop GUI for controlling LIFX lights.
+lifx_gui.py - LumeDial: slick dark-themed desktop GUI for smart lights.
+
+Drives LIFX, Hue, WiZ, Yeelight, Nanoleaf and Govee lights through the vendor
+abstraction in devices.py.
 
 Highlights:
   * Flat dark theme, Bahnschrift / Consolas typography.
   * Scene tiles backed by real photos (images/<scene>.png from fetch_photos.py),
     falling back to procedurally generated gradient art (art.py).
-  * VST-style rotary knobs for per-light brightness & white temperature.
-  * A master brightness slider that drives every light at once.
+  * VST-style rotary knobs for per-light brightness & white temperature, plus
+    master brightness, volume and effect-speed knobs.
+  * Live effects and screen-sync (effects.py) with per-scene audio ambience.
 
 Only dependency is the Python stdlib + Tkinter (Pillow is used by the separate
-fetch_photos.py tool, not at runtime).
+fetch_photos.py / branding tools; python-vlc only when ambience plays).
 
-Run:  python lifx_gui.py   (or pythonw lifx_gui.py / double-click LIFX.bat)
+Run:  python lifx_gui.py   (or pythonw lifx_gui.py / double-click LumeDial.bat)
 """
 
 import math
@@ -718,10 +722,11 @@ class App:
         self.cards = []
         self.tiles = []
 
-        root.title("LIFX Control")
+        root.title("LumeDial")
         root.configure(bg=BG)
         root.geometry("544x884")
         root.minsize(496, 560)
+        self._set_icon(root)
 
         self._init_style()
         self._build_toolbar()
@@ -732,6 +737,18 @@ class App:
 
         root.protocol("WM_DELETE_WINDOW", self._on_close)
         root.after(250, self.discover)
+
+    def _set_icon(self, root):
+        """Window/taskbar icon. Cosmetic - never let it break startup."""
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "branding", "lumedial_icon_256.png")
+        if not os.path.exists(path):
+            return
+        try:
+            self._icon = tk.PhotoImage(file=path)
+            root.iconphoto(True, self._icon)
+        except Exception:                    # noqa: BLE001
+            pass
 
     def _init_style(self):
         style = ttk.Style()
@@ -748,8 +765,8 @@ class App:
     def _build_toolbar(self):
         bar = tk.Frame(self.root, bg=BG)
         bar.pack(fill="x", padx=16, pady=(14, 4))
-        tk.Label(bar, text="LIFX ", bg=BG, fg=TEXT, font=F_TITLE).pack(side="left")
-        tk.Label(bar, text="Control", bg=BG, fg=ACCENT, font=F_TITLE).pack(side="left")
+        tk.Label(bar, text="Lume", bg=BG, fg=TEXT, font=F_TITLE).pack(side="left")
+        tk.Label(bar, text="Dial", bg=BG, fg=ACCENT, font=F_TITLE).pack(side="left")
         self.refresh_btn = flat_button(bar, "Discover", self.discover)
         self.refresh_btn.pack(side="right")
         flat_button(bar, "All Off", lambda: self.all_power(False)).pack(

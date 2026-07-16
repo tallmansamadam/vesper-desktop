@@ -1,76 +1,77 @@
-# LIFX Control
+# LumeDial — desktop
 
-A small desktop app to control your LIFX lights from Windows over your **local
-network** — no LIFX cloud account, no API token, no internet required. It speaks
-the LIFX **LAN protocol** directly over UDP using nothing but the Python standard
-library (Tkinter for the GUI).
+A dark, dial-driven desktop app for controlling smart lights over your **local
+network** — no cloud account, no API tokens, no internet. Six brands behind one
+vendor abstraction, driven by scenes, live effects and screen-sync.
+
+**Works with:** LIFX · Philips Hue · WiZ · Yeelight · Nanoleaf · Govee
+*(unofficial — not affiliated with or endorsed by any of these brands)*
 
 ## Requirements
 
-- Python 3 with Tkinter (the standard python.org installer for Windows already
-  includes it — verified working on Python 3.14).
-- Your PC and your LIFX bulbs on the **same Wi-Fi / subnet**. Discovery uses a
-  UDP broadcast, which routers don't forward between subnets or guest networks.
-
-No `pip install` is needed.
+- Python 3 with Tkinter (the python.org Windows installer includes it — verified
+  on 3.14). No `pip install` needed for the core app.
+- Your PC on the **same subnet** as the lights. Discovery binds every local
+  interface and sends subnet-directed broadcasts, so it works even with a VPN
+  owning the default route.
+- Optional: `Pillow` (scene photo fetch + logo generation), `python-vlc` +
+  VLC (audio ambience).
 
 ## Run
 
-Double-click **`LIFX.bat`**, or from a terminal:
+Double-click **`LumeDial.bat`**, or:
 
 ```powershell
 python lifx_gui.py
 ```
 
-The window opens and auto-discovers your lights. Each light gets a card with:
+Hit **Discover**. Lights from every brand appear together, each card tagged with
+its vendor.
 
-- **On / Off** toggle
-- **Brightness** slider (pushed to the bulb when you release it)
-- **Color presets** + a full **Color…** picker
-- **White** colour-temperature slider (2500–9000 K)
+## Per-brand setup
 
-Plus toolbar buttons: **Discover** (re-scan), **All On**, **All Off**.
+| Brand | Setup |
+|-------|-------|
+| **LIFX** | None — discovered automatically. |
+| **WiZ** | None — discovered automatically. |
+| **Govee** | Enable *LAN Control* for the device in the Govee Home app. |
+| **Yeelight** | Enable *LAN Control* for the bulb in the Yeelight app. |
+| **Hue** | Press the bridge's round button, then click **+ Hue**. |
+| **Nanoleaf** | Hold the panel's power button 5–7s (LEDs flash), then click **+ Nanoleaf**. |
 
-## Command-line smoke test
+Hue and Nanoleaf credentials are saved to `hue.json` / `nanoleaf.json`, both
+gitignored.
 
-To confirm the lights are reachable without the GUI:
+## Features
 
-```powershell
-python lifx_lan.py
-```
+- **33 scenes** with anime artwork; palette scenes re-shuffle colours across
+  your bulbs on every tap. Right-click a tile to re-roll its image.
+- **Live effects** — breathe, flow, flicker, strobe — that animate the
+  *current* scene's colours, capped at each bulb's set brightness, with a live
+  speed knob.
+- **Screen sync** — samples your screen and drives the lights to complement or
+  augment it, with eased colour transitions.
+- **Audio ambience** per scene (synth + real recordings).
+- **VST-style knobs** everywhere; double-click any knob to reset it.
 
-This broadcasts for devices and prints each one's name, IP, serial, power state,
-brightness, colour, and white temperature.
+## Layout
 
-## Files
+| File | Purpose |
+|------|---------|
+| `devices.py` | Multi-vendor controller; aggregates + delegates to providers |
+| `lifx_lan.py` | LIFX LAN protocol (ack+retry, VPN-aware discovery) |
+| `hue.py` `wiz.py` `yeelight.py` `nanoleaf.py` `govee.py` | Per-brand providers |
+| `scenes.py` | Scene catalogue, palettes, shuffle |
+| `effects.py` | Live effects + screen-sync colour extraction |
+| `lifx_gui.py` | The UI |
+| `art.py` `fetch_photos.py` | Gradient art + scene photo fetching |
+| `ambience.py` | Synthesised audio ambience |
+| `branding/gen_logo.py` | Generates the LumeDial logo + all app icons |
 
-| File          | Purpose |
-|---------------|---------|
-| `lifx_lan.py` | The LIFX LAN protocol client (discovery + commands). Importable/scriptable. |
-| `lifx_gui.py` | The Tkinter desktop UI. |
-| `LIFX.bat`    | Double-click launcher (uses `pythonw`, no console window). |
+## Reliability notes
 
-## Using it as a library
-
-```python
-from lifx_lan import LifxLan
-
-lan = LifxLan()
-lights = lan.discover()
-for light in lights:
-    lan.set_power(light, True)
-    lan.set_rgb(light, 255, 0, 0)      # red, keeps current brightness
-    lan.set_brightness(light, 60)      # 60%
-    lan.set_white(light, 80, 2700)     # warm white at 80%
-```
-
-## Troubleshooting
-
-- **No lights found:** make sure the bulbs are powered and joined to the same
-  network as this PC (not a separate guest/IoT SSID). Some Wi-Fi setups isolate
-  IoT devices from PCs — they must be able to exchange UDP on port 56700.
-- **A command doesn't take:** UDP can drop packets. The app already re-sends and
-  retries; just nudge the control again or hit **Discover** to re-read state.
-- **Firewall prompt:** allow Python to communicate on private networks so it can
-  receive the bulbs' UDP replies.
-```
+- One-shot commands (power, colour, scenes, master) are **acknowledged and
+  retried**, so every bulb actually receives them. Streaming effects stay
+  fire-and-forget for speed.
+- Yeelight and Nanoleaf throttle effect streaming to respect their LAN rate
+  limits; LIFX, WiZ and Govee stream at full rate.
