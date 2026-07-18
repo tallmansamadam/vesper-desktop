@@ -9,26 +9,42 @@ vendor abstraction, driven by scenes, live effects and screen-sync.
 **Works with:** LIFX · Philips Hue · WiZ · Yeelight · Nanoleaf · Govee
 *(unofficial — not affiliated with or endorsed by any of these brands)*
 
+## Two implementations
+
+The app exists twice in this repo, sharing the same assets (`images/`,
+`audio/`, `branding/`) and the same credential files (`hue.json`,
+`nanoleaf.json`):
+
+- **`native/` — Rust + egui. The one to use.** A single static `vesper.exe`
+  with no runtime dependencies; window up in ~80 ms warm (the Python app takes
+  ~10 s). Full feature parity: six vendors, scenes, effects, screen-sync,
+  ambience, knobs.
+- **`lifx_gui.py` — the original Python/Tkinter app**, kept as reference and
+  for the asset tooling (`fetch_photos.py` re-rolls scene images; the native
+  app doesn't).
+
 ## Requirements
 
-- Python 3 with Tkinter (the python.org Windows installer includes it — verified
-  on 3.14). No `pip install` needed for the core app.
 - Your PC on the **same subnet** as the lights. Discovery binds every local
   interface and sends subnet-directed broadcasts, so it works even with a VPN
   owning the default route.
-- Optional: `Pillow` (scene photo fetch + logo generation), `python-vlc` +
-  VLC (audio ambience).
+- Native build: `cargo build --release` in `native/` (Rust stable). Nothing
+  else — audio and image decoding are compiled in.
+- Python app only: Python 3 with Tkinter; optional Pillow + python-vlc.
 
 ## Run
 
-Double-click **`Vesper.bat`**, or:
+Double-click **`Vesper.bat`** (prefers the native exe, falls back to Python),
+or:
 
 ```powershell
-python lifx_gui.py
+native\target\release\vesper.exe     # native
+python lifx_gui.py                   # python original
 ```
 
 Hit **Discover**. Lights from every brand appear together, each card tagged with
-its vendor.
+its vendor. `vesper.exe --discover out.txt` runs a headless discovery +
+ack-verification pass and writes the result to a file (diagnostic).
 
 ## Per-brand setup
 
@@ -58,17 +74,18 @@ gitignored.
 
 ## Layout
 
-| File | Purpose |
-|------|---------|
-| `devices.py` | Multi-vendor controller; aggregates + delegates to providers |
-| `lifx_lan.py` | LIFX LAN protocol (ack+retry, VPN-aware discovery) |
-| `hue.py` `wiz.py` `yeelight.py` `nanoleaf.py` `govee.py` | Per-brand providers |
-| `scenes.py` | Scene catalogue, palettes, shuffle |
-| `effects.py` | Live effects + screen-sync colour extraction |
-| `lifx_gui.py` | The UI |
-| `art.py` `fetch_photos.py` | Gradient art + scene photo fetching |
-| `ambience.py` | Synthesised audio ambience |
-| `branding/gen_logo.py` | Generates the Vesper logo + all app icons |
+| Native (Rust) | Python | Purpose |
+|------|------|---------|
+| `native/src/controller.rs` | `devices.py` | Multi-vendor controller; delegates to providers |
+| `native/src/lifx.rs` | `lifx_lan.py` | LIFX LAN protocol (ack+retry, VPN-aware discovery) |
+| `native/src/{hue,wiz,yeelight,nanoleaf,govee}.rs` | same `.py` | Per-brand providers |
+| `native/src/scenes.rs` | `scenes.py` | Scene catalogue, palettes, shuffle, ambience map |
+| `native/src/effects.rs` | `effects.py` | Live effects + screen-sync (GDI capture in `screen.rs`) |
+| `native/src/main.rs` + `knob.rs` | `lifx_gui.py` | The UI (egui / Tkinter) |
+| `native/src/ambience.rs` | GUI's `Ambience` | Audio loops (rodio / VLC) |
+| — | `art.py` `fetch_photos.py` | Gradient art + scene photo fetching (asset tooling) |
+| — | `ambience.py` | Synthesises the audio loops in `audio/` |
+| — | `branding/gen_logo.py` | Generates the Vesper logo + all app icons |
 
 ## Reliability notes
 
