@@ -175,7 +175,13 @@ def main():
     os.makedirs(HERE, exist_ok=True)
 
     render(1024).save(os.path.join(HERE, "vesper_1024.png"))
-    render(256).save(os.path.join(HERE, "vesper_icon_256.png"))
+    icon256 = render(256)
+    icon256.save(os.path.join(HERE, "vesper_icon_256.png"))
+    # Windows .ico for the Start-menu / desktop shortcut, every size Explorer
+    # picks from (16-256) embedded in one file, downsampled from the 256 master.
+    icon256.save(os.path.join(HERE, "vesper.ico"),
+                 sizes=[(16, 16), (24, 24), (32, 32), (48, 48),
+                        (64, 64), (128, 128), (256, 256)])
     print("branding masters written")
 
     android_res = os.path.join(MOBILE, "android", "app", "src", "main", "res")
