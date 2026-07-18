@@ -1,5 +1,5 @@
 """
-gen_anim.py - Animate the LumeDial mark: the dial sweeps up, its arc filling
+gen_anim.py - Animate the Vesper mark: the dial sweeps up, its arc filling
 with spectrum colour as the pointer travels, the core igniting, and the whole
 space around it flooding with radiant light in the current hue.
 
@@ -121,11 +121,25 @@ def frame(size, p):
                        fill=G._hue_at(t) + (255,))
         img = Image.alpha_composite(img, arc)
 
-    # --- pointer rides the sweep ------------------------------------------
-    d = ImageDraw.Draw(img)
+    # --- the nib: colour is deposited where the pointer meets the ring -----
+    # Drawn additively, under the pointer, so the band reads as being laid
+    # down by the tip rather than merely appearing beside it.
     a = math.radians(G.ARC_START + swept)
+    if p > 0.01:
+        nx, ny = cx + R * math.cos(a), cy + R * math.sin(a)
+        spark = Image.new("RGB", (s, s), (0, 0, 0))
+        for rad, col, dim in ((s * 0.085, hue_now, 0.85),
+                              (s * 0.030, (255, 255, 255), 0.95)):
+            spark = ImageChops.screen(
+                spark, G._dim(G._radial(s, nx, ny, rad, col, power=1.2), dim))
+        img = Image.alpha_composite(
+            ImageChops.screen(img.convert("RGB"), spark).convert("RGBA"),
+            Image.new("RGBA", (s, s), (0, 0, 0, 0)))
+
+    # --- pointer rides the sweep, its tip riding the band it draws --------
+    d = ImageDraw.Draw(img)
     p1 = (cx + s * 0.145 * math.cos(a), cy + s * 0.145 * math.sin(a))
-    p2 = (cx + s * 0.233 * math.cos(a), cy + s * 0.233 * math.sin(a))
+    p2 = (cx + s * 0.302 * math.cos(a), cy + s * 0.302 * math.sin(a))
     pw = int(s * 0.034)
     d.line([p1, p2], fill=(255, 255, 255, 255), width=pw)
     for pt in (p1, p2):
@@ -155,7 +169,7 @@ def main():
         if i % 12 == 0:
             print(f"  frame {i+1}/{len(ps)}")
 
-    gif = os.path.join(HERE, "lumedial_sweep.gif")
+    gif = os.path.join(HERE, "vesper_sweep.gif")
     frames[0].save(gif, save_all=True, append_images=frames[1:],
                    duration=45, loop=0, optimize=True)
     print("wrote", gif, f"({len(frames)} frames)")

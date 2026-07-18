@@ -1,10 +1,10 @@
 """
-gen_logo.py - Generate the LumeDial logo and every app icon size from code.
+gen_logo.py - Generate the Vesper logo and every app icon size from code.
 
 The mark: the app's signature rotary dial, lit from within. Its 270-degree
 value arc sweeps the full hue spectrum, that spectrum washes across the dial
 face as a blurred conic glow, and a white-hot core burns at the centre -
-"lume" on a dial.
+the evening star, held on a dial.
 
 Light is composited additively (screen blending) rather than painted on top,
 so the colour genuinely illuminates the face instead of sitting beside it.
@@ -12,8 +12,8 @@ Everything is geometry + a hue sweep at 4x supersampling: original by
 construction, regenerable at any size.
 
 Outputs:
-  branding/lumedial_1024.png          master, transparent, rounded-square bg
-  branding/lumedial_icon_256.png      desktop window icon (Tk iconphoto)
+  branding/vesper_1024.png            master, transparent, rounded-square bg
+  branding/vesper_icon_256.png        desktop window icon (Tk iconphoto)
   ../lifx_mobile android mipmaps      ic_launcher.png at all densities
   ../lifx_mobile iOS AppIcon set      every size in Contents.json (opaque)
 
@@ -174,8 +174,8 @@ def render(size, opaque=False):
 def main():
     os.makedirs(HERE, exist_ok=True)
 
-    render(1024).save(os.path.join(HERE, "lumedial_1024.png"))
-    render(256).save(os.path.join(HERE, "lumedial_icon_256.png"))
+    render(1024).save(os.path.join(HERE, "vesper_1024.png"))
+    render(256).save(os.path.join(HERE, "vesper_icon_256.png"))
     print("branding masters written")
 
     android_res = os.path.join(MOBILE, "android", "app", "src", "main", "res")

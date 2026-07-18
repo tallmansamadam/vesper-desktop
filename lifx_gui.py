@@ -1,5 +1,5 @@
 """
-lifx_gui.py - LumeDial: slick dark-themed desktop GUI for smart lights.
+lifx_gui.py - Vesper: slick dark-themed desktop GUI for smart lights.
 
 Drives LIFX, Hue, WiZ, Yeelight, Nanoleaf and Govee lights through the vendor
 abstraction in devices.py.
@@ -15,7 +15,7 @@ Highlights:
 Only dependency is the Python stdlib + Tkinter (Pillow is used by the separate
 fetch_photos.py / branding tools; python-vlc only when ambience plays).
 
-Run:  python lifx_gui.py   (or pythonw lifx_gui.py / double-click LumeDial.bat)
+Run:  python lifx_gui.py   (or pythonw lifx_gui.py / double-click Vesper.bat)
 """
 
 import math
@@ -722,7 +722,7 @@ class App:
         self.cards = []
         self.tiles = []
 
-        root.title("LumeDial")
+        root.title("Vesper")
         root.configure(bg=BG)
         root.geometry("544x884")
         root.minsize(496, 560)
@@ -741,7 +741,7 @@ class App:
     def _set_icon(self, root):
         """Window/taskbar icon. Cosmetic - never let it break startup."""
         path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                            "branding", "lumedial_icon_256.png")
+                            "branding", "vesper_icon_256.png")
         if not os.path.exists(path):
             return
         try:
@@ -765,8 +765,8 @@ class App:
     def _build_toolbar(self):
         bar = tk.Frame(self.root, bg=BG)
         bar.pack(fill="x", padx=16, pady=(14, 4))
-        tk.Label(bar, text="Lume", bg=BG, fg=TEXT, font=F_TITLE).pack(side="left")
-        tk.Label(bar, text="Dial", bg=BG, fg=ACCENT, font=F_TITLE).pack(side="left")
+        tk.Label(bar, text="Ves", bg=BG, fg=TEXT, font=F_TITLE).pack(side="left")
+        tk.Label(bar, text="per", bg=BG, fg=ACCENT, font=F_TITLE).pack(side="left")
         self.refresh_btn = flat_button(bar, "Discover", self.discover)
         self.refresh_btn.pack(side="right")
         flat_button(bar, "All Off", lambda: self.all_power(False)).pack(

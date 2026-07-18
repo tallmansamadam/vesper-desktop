@@ -1,6 +1,6 @@
-# LumeDial — desktop
+# Vesper — desktop
 
-<img src="branding/lumedial_sweep.gif" width="180" alt="LumeDial dial sweeping up through the spectrum">
+<img src="branding/vesper_sweep.gif" width="180" alt="The Vesper dial sweeping up through the spectrum">
 
 A dark, dial-driven desktop app for controlling smart lights over your **local
 network** — no cloud account, no API tokens, no internet. Six brands behind one
@@ -21,7 +21,7 @@ vendor abstraction, driven by scenes, live effects and screen-sync.
 
 ## Run
 
-Double-click **`LumeDial.bat`**, or:
+Double-click **`Vesper.bat`**, or:
 
 ```powershell
 python lifx_gui.py
@@ -68,7 +68,7 @@ gitignored.
 | `lifx_gui.py` | The UI |
 | `art.py` `fetch_photos.py` | Gradient art + scene photo fetching |
 | `ambience.py` | Synthesised audio ambience |
-| `branding/gen_logo.py` | Generates the LumeDial logo + all app icons |
+| `branding/gen_logo.py` | Generates the Vesper logo + all app icons |
 
 ## Reliability notes
 
