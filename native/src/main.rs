@@ -201,6 +201,10 @@ struct VesperApp {
     audio: Ambience,
     noise: noise::Noise,
     noise_open: bool,
+    timer_open: bool,
+    timer_minutes: f32,
+    /// When set, the wall-clock instant the sleep timer fires.
+    timer_end: Option<Instant>,
     /// Per-light UI mirrors: id -> (brightness knob, white knob).
     knobs: HashMap<String, (f32, f32)>,
     toggles: HashMap<String, bool>,
@@ -238,6 +242,9 @@ impl VesperApp {
             audio: Ambience::new(root.join("audio")),
             noise: noise::Noise::new(),
             noise_open: false,
+            timer_open: false,
+            timer_minutes: 30.0,
+            timer_end: None,
             knobs: HashMap::new(),
             toggles: HashMap::new(),
             pickers: HashMap::new(),
@@ -750,6 +757,26 @@ impl eframe::App for VesperApp {
             ctx.request_repaint_after(Duration::from_millis(100));
         }
 
+        // Sleep timer: when it elapses, fade every light off and silence the
+        // audio beds. Checked here (not on a thread) and kept ticking by a
+        // repaint request so the countdown stays live even when idle.
+        if let Some(end) = self.timer_end {
+            if Instant::now() >= end {
+                self.timer_end = None;
+                self.audio.stop();
+                self.noise.stop();
+                let lights = self.lights.clone();
+                self.set_status("Sleep timer: fading everything off …", false);
+                self.spawn_cmd(ctx, "Sleep timer: lights off.".into(), move |c| {
+                    for l in &lights {
+                        c.set_power(l, false, 3000); // 3s fade where the vendor supports it
+                    }
+                });
+            } else {
+                ctx.request_repaint_after(Duration::from_millis(500));
+            }
+        }
+
         let mut acts: Vec<Act> = Vec::new();
 
         egui::CentralPanel::default()
@@ -878,6 +905,71 @@ impl eframe::App for VesperApp {
                                         Self::caption(ui, k.label());
                                     });
                                     ui.add_space(10.0);
+                                }
+                            });
+                        }
+
+                        // ---- sleep timer (collapsible) ----------------------
+                        ui.add_space(8.0);
+                        let t_arrow = if self.timer_open { "-" } else { "+" };
+                        if self
+                            .pill(ui, &format!("{t_arrow}  Timer"), self.timer_end.is_some())
+                            .clicked()
+                        {
+                            self.timer_open = !self.timer_open;
+                        }
+                        if self.timer_open {
+                            ui.add_space(6.0);
+                            ui.horizontal(|ui| {
+                                if let Some(end) = self.timer_end {
+                                    let rem =
+                                        end.saturating_duration_since(Instant::now()).as_secs();
+                                    ui.label(
+                                        RichText::new(format!(
+                                            "Sleep in {:02}:{:02}",
+                                            rem / 60,
+                                            rem % 60
+                                        ))
+                                        .size(14.0)
+                                        .monospace()
+                                        .color(theme::TEXT),
+                                    );
+                                    ui.add_space(12.0);
+                                    if self.pill(ui, "Cancel", false).clicked() {
+                                        self.timer_end = None;
+                                        self.set_status("Sleep timer cancelled.", false);
+                                    }
+                                } else {
+                                    ui.vertical(|ui| {
+                                        let mut m = self.timer_minutes;
+                                        let res = knob(
+                                            ui, &mut m, 5.0, 120.0, 46.0, theme::ACCENT,
+                                            30.0, |v| format!("{}m", v as i32),
+                                        );
+                                        if m != self.timer_minutes
+                                            || res.committed.is_some()
+                                            || res.wheeled
+                                        {
+                                            self.timer_minutes = m;
+                                        }
+                                        Self::caption(ui, "MINUTES");
+                                    });
+                                    ui.add_space(12.0);
+                                    if self.pill(ui, "Start sleep", false).clicked() {
+                                        self.timer_end = Some(
+                                            Instant::now()
+                                                + Duration::from_secs_f32(
+                                                    self.timer_minutes * 60.0,
+                                                ),
+                                        );
+                                        self.set_status(
+                                            format!(
+                                                "Sleep timer set for {} min — fades off then.",
+                                                self.timer_minutes as i32
+                                            ),
+                                            false,
+                                        );
+                                    }
                                 }
                             });
                         }
