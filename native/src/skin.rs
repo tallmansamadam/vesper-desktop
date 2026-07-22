@@ -6,7 +6,13 @@
 //! plain `Shape`s so callers can drop a panel background into a reserved paint
 //! slot (behind content) or paint a button inline.
 
-use egui::{pos2, Color32, Mesh, Painter, Rect, Rounding, Shape, Stroke};
+use egui::{pos2, Color32, Mesh, Painter, Pos2, Rect, Rounding, Shape, Stroke};
+
+fn lerp_color(a: Color32, b: Color32, t: f32) -> Color32 {
+    let t = t.clamp(0.0, 1.0);
+    let l = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t) as u8;
+    Color32::from_rgb(l(a.r(), b.r()), l(a.g(), b.g()), l(a.b(), b.b()))
+}
 
 /// A vertical two-stop gradient across `rect`, as a mesh (square corners).
 pub fn vgrad(rect: Rect, top: Color32, bottom: Color32) -> Shape {
@@ -17,6 +23,25 @@ pub fn vgrad(rect: Rect, top: Color32, bottom: Color32) -> Shape {
     mesh.colored_vertex(rect.left_bottom(), bottom);
     mesh.add_triangle(0, 1, 2);
     mesh.add_triangle(0, 2, 3);
+    Shape::Mesh(mesh)
+}
+
+/// A vertically-shaded filled disc (top lighter, bottom darker) as a triangle
+/// fan - a round metallic bezel that leaves the corners transparent so it
+/// blends into whatever is behind it, unlike the square [`vgrad`].
+pub fn vgrad_circle(center: Pos2, radius: f32, top: Color32, bottom: Color32) -> Shape {
+    let seg = 48;
+    let mut mesh = Mesh::default();
+    mesh.colored_vertex(center, lerp_color(top, bottom, 0.5));
+    for i in 0..=seg {
+        let a = std::f32::consts::TAU * i as f32 / seg as f32;
+        let p = pos2(center.x + radius * a.cos(), center.y + radius * a.sin());
+        let t = (p.y - (center.y - radius)) / (2.0 * radius); // 0 top .. 1 bottom
+        mesh.colored_vertex(p, lerp_color(top, bottom, t));
+    }
+    for i in 1..=seg as u32 {
+        mesh.add_triangle(0, i, i + 1);
+    }
     Shape::Mesh(mesh)
 }
 

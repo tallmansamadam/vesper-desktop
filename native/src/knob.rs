@@ -2,7 +2,7 @@
 //! digital readout - drag up/down, scroll wheel, double-click to reset) and
 //! the iOS-style sliding toggle. Ported from the Tk canvases in lifx_gui.py.
 
-use egui::{Align2, Color32, FontId, Pos2, Rect, Sense, Shape, Stroke, Ui, Vec2};
+use egui::{Align2, Color32, FontId, Pos2, Sense, Shape, Stroke, Ui, Vec2};
 
 use crate::skin;
 use crate::theme;
@@ -66,19 +66,16 @@ pub fn knob(
         let c = rect.center();
         let f = ((*value - min) / span).clamp(0.0, 1.0);
 
-        // metallic bezel: a brushed-steel gradient ring around the face
+        // metallic bezel: a round brushed-steel disc (circular, so the corners
+        // stay transparent and blend into the panel behind it)
         let bez_r = size / 2.0 - 2.0;
-        painter.add(skin::vgrad(
-            Rect::from_center_size(c, Vec2::splat(bez_r * 2.0)),
+        painter.add(skin::vgrad_circle(
+            c,
+            bez_r,
             theme::STEEL_TOP,
             theme::STEEL_BOT,
         ));
-        painter.circle(
-            c,
-            bez_r,
-            Color32::TRANSPARENT,
-            Stroke::new(1.0, Color32::from_black_alpha(140)),
-        );
+        painter.circle_stroke(c, bez_r, Stroke::new(1.0, Color32::from_black_alpha(140)));
 
         // recessed face + top bevel highlight
         let face_r = size / 2.0 - 7.0;
