@@ -949,20 +949,22 @@ impl eframe::App for VesperApp {
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
+                        const GAP: f32 = 6.0;
+
+                        // Scenes: fixed-size tiles that wrap to as many columns
+                        // as the current width allows (reflow on resize).
                         Self::caption(ui, "SCENES");
                         ui.add_space(4.0);
-                        for (row_i, row) in SCENES.chunks(3).enumerate() {
-                            ui.horizontal(|ui| {
-                                for (col_i, sc) in row.iter().enumerate() {
-                                    let idx = row_i * 3 + col_i;
-                                    if self.scene_tile(ui, sc).clicked() {
-                                        acts.push(Act::Scene(idx));
-                                    }
+                        ui.horizontal_wrapped(|ui| {
+                            ui.spacing_mut().item_spacing = Vec2::splat(GAP);
+                            for (idx, sc) in SCENES.iter().enumerate() {
+                                if self.scene_tile(ui, sc).clicked() {
+                                    acts.push(Act::Scene(idx));
                                 }
-                            });
-                            ui.add_space(6.0);
-                        }
+                            }
+                        });
                         ui.add_space(8.0);
+
                         Self::caption(ui, "LIGHTS");
                         ui.add_space(4.0);
                         if self.lights.is_empty() && !self.discovering {
@@ -975,10 +977,28 @@ impl eframe::App for VesperApp {
                                 .color(theme::MUTED),
                             );
                         }
+                        // Light cards: reflow into a responsive grid. Pick the
+                        // column count from the available width and a ~300px
+                        // target, then size every card to fill its share evenly.
                         let lights = self.lights.clone();
-                        for l in &lights {
-                            self.light_card(ui, l, &mut acts);
-                            ui.add_space(6.0);
+                        if !lights.is_empty() {
+                            let avail = ui.available_width();
+                            let cols = (((avail + GAP) / (300.0 + GAP)).floor() as usize)
+                                .clamp(1, lights.len());
+                            let card_w = (avail - GAP * (cols as f32 - 1.0)) / cols as f32;
+                            for row in lights.chunks(cols) {
+                                ui.horizontal_top(|ui| {
+                                    ui.spacing_mut().item_spacing.x = GAP;
+                                    for l in row {
+                                        ui.allocate_ui_with_layout(
+                                            Vec2::new(card_w, 0.0),
+                                            Layout::top_down(Align::Min),
+                                            |ui| self.light_card(ui, l, &mut acts),
+                                        );
+                                    }
+                                });
+                                ui.add_space(GAP);
+                            }
                         }
                     });
             });
