@@ -16,6 +16,7 @@ mod knob;
 mod lifx;
 mod light;
 mod nanoleaf;
+mod noise;
 mod scenes;
 mod screen;
 mod skin;
@@ -198,6 +199,8 @@ struct VesperApp {
     speed_ui: f32,
     driver: Driver,
     audio: Ambience,
+    noise: noise::Noise,
+    noise_open: bool,
     /// Per-light UI mirrors: id -> (brightness knob, white knob).
     knobs: HashMap<String, (f32, f32)>,
     toggles: HashMap<String, bool>,
@@ -233,6 +236,8 @@ impl VesperApp {
             speed_ui: 100.0,
             driver: Driver::new(),
             audio: Ambience::new(root.join("audio")),
+            noise: noise::Noise::new(),
+            noise_open: false,
             knobs: HashMap::new(),
             toggles: HashMap::new(),
             pickers: HashMap::new(),
@@ -841,6 +846,41 @@ impl eframe::App for VesperApp {
                                 });
                             });
                         });
+
+                        // ---- noise generator (collapsible) ------------------
+                        // Layered noise colours, mixable, tucked into the same
+                        // bar as the master dials. Header toggles the section.
+                        ui.add_space(8.0);
+                        let arrow = if self.noise_open { "-" } else { "+" };
+                        if self
+                            .pill(ui, &format!("{arrow}  Noise"), self.noise.active())
+                            .clicked()
+                        {
+                            self.noise_open = !self.noise_open;
+                        }
+                        if self.noise_open {
+                            ui.add_space(6.0);
+                            ui.horizontal(|ui| {
+                                for k in noise::KINDS {
+                                    ui.vertical(|ui| {
+                                        let mut v = self.noise.level_pct(k);
+                                        let before = v;
+                                        let res = knob(
+                                            ui, &mut v, 0.0, 100.0, 46.0, theme::GREEN,
+                                            0.0, |x| format!("{}", x as i32),
+                                        );
+                                        if v != before
+                                            || res.committed.is_some()
+                                            || res.wheeled
+                                        {
+                                            self.noise.set_level(k, v);
+                                        }
+                                        Self::caption(ui, k.label());
+                                    });
+                                    ui.add_space(10.0);
+                                }
+                            });
+                        }
                     });
                 ui.painter().set(
                     master_bg,
@@ -1013,6 +1053,7 @@ impl Drop for VesperApp {
     fn drop(&mut self) {
         self.driver.stop_current();
         self.audio.stop();
+        self.noise.stop();
     }
 }
 
