@@ -853,7 +853,13 @@ impl eframe::App for VesperApp {
                     ui.vertical(|ui| {
                         ui.horizontal(|ui| {
                             Self::caption(ui, "EFFECTS");
-                            for mode in [Mode::Breathe, Mode::Flow, Mode::Flicker, Mode::Strobe] {
+                            for mode in [
+                                Mode::Breathe,
+                                Mode::Flow,
+                                Mode::Undulate,
+                                Mode::Flicker,
+                                Mode::Strobe,
+                            ] {
                                 if self
                                     .pill(ui, mode.label(), self.driver.mode == Some(mode))
                                     .clicked()

@@ -19,6 +19,7 @@ use crate::screen::sample_screen;
 pub enum Mode {
     Breathe,
     Flow,
+    Undulate,
     Flicker,
     Strobe,
     Complement,
@@ -30,6 +31,7 @@ impl Mode {
         match self {
             Mode::Breathe => "Breathe",
             Mode::Flow => "Flow",
+            Mode::Undulate => "Undulate",
             Mode::Flicker => "Flicker",
             Mode::Strobe => "Strobe",
             Mode::Complement => "Complement",
@@ -101,6 +103,27 @@ fn frame(mode: Mode, ctrl: &Controller, lights: &[Arc<Light>], t: f32, st: &mut 
                 let i0 = (p as usize) % n;
                 let c = lerp_hsbk(palette[i0], palette[(i0 + 1) % n], p.fract());
                 ctrl.stream_color(l, c[0], c[1], c[2], c[3], 300);
+            }
+        }
+        Mode::Undulate => {
+            // Flow's drifting colour + breathe's brightness envelope, with the
+            // breath phase-shifted per bulb so the swell rolls across the
+            // lights like a wave rather than pulsing them in unison.
+            let palette: Vec<[u16; 4]> = lights
+                .iter()
+                .filter_map(|l| st.base.get(&l.id).copied())
+                .collect();
+            let n = palette.len();
+            if n == 0 {
+                return;
+            }
+            for (i, l) in lights.iter().enumerate() {
+                let p = t * 0.2 + i as f32;
+                let i0 = (p as usize) % n;
+                let c = lerp_hsbk(palette[i0], palette[(i0 + 1) % n], p.fract());
+                let phase = 2.0 * std::f32::consts::PI * t / 6.0 - i as f32 * 0.9;
+                let m = 0.12 + 0.88 * (0.5 - 0.5 * phase.cos());
+                ctrl.stream_color(l, c[0], c[1], (c[2] as f32 * m) as u16, c[3], 280);
             }
         }
         Mode::Flicker => {

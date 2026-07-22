@@ -64,9 +64,10 @@ gitignored.
 
 - **33 scenes** with anime artwork; palette scenes re-shuffle colours across
   your bulbs on every tap. Right-click a tile to re-roll its image.
-- **Live effects** — breathe, flow, flicker, strobe — that animate the
-  *current* scene's colours, capped at each bulb's set brightness, with a live
-  speed knob.
+- **Live effects** — breathe, flow, undulate (breathe + flow: colours drift
+  while brightness swells as a travelling wave), flicker, strobe — that animate
+  the *current* scene's colours, capped at each bulb's set brightness, with a
+  live speed knob.
 - **Screen sync** — samples your screen and drives the lights to complement or
   augment it, with eased colour transitions.
 - **Audio ambience** per scene (synth + real recordings).

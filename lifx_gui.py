@@ -829,7 +829,8 @@ class App:
         bc1 = tk.Frame(r1, bg=BG)
         bc1.pack(side="right")
         for label, mode in [("Breathe", "breathe"), ("Flow", "flow"),
-                            ("Flicker", "flicker"), ("Strobe", "strobe")]:
+                            ("Undulate", "undulate"), ("Flicker", "flicker"),
+                            ("Strobe", "strobe")]:
             b = flat_button(bc1, label, lambda m=mode: self._toggle_effect(m))
             b.pack(side="left", padx=3)
             self._motion_btns[mode] = b

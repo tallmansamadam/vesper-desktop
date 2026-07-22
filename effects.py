@@ -62,6 +62,24 @@ def flow(lan, lights, t, st):
         lan.stream_color(light, c[0], c[1], c[2], c[3], duration_ms=300)
 
 
+def undulate(lan, lights, t, st):
+    """Breathe + flow combined: the scene's colours drift across the bulbs
+    (as in flow) while their brightness swells and ebbs (as in breathe), with
+    the breath phase-shifted per bulb so the swell rolls across the lights
+    like a wave instead of pulsing them all in unison.
+    """
+    palette = [st["base"][light.target] for light in lights]
+    n = len(palette)
+    if n == 0:
+        return
+    for i, light in enumerate(lights):
+        p = t * 0.2 + i
+        i0 = int(p) % n
+        c = _lerp_hsbk(palette[i0], palette[(i0 + 1) % n], p - int(p))
+        m = 0.12 + 0.88 * (0.5 - 0.5 * math.cos(2 * math.pi * t / 6.0 - i * 0.9))
+        lan.stream_color(light, c[0], c[1], int(c[2] * m), c[3], duration_ms=280)
+
+
 def flicker(lan, lights, t, st):
     """Flicker each bulb's current colour (brightness never above its set level)."""
     if t - st.get("ft", -1.0) < 0.09:
@@ -81,7 +99,8 @@ def strobe(lan, lights, t, st):
         lan.stream_color(light, h, s, b if on else 0, k, duration_ms=30)
 
 
-EFFECTS = {"breathe": breathe, "flow": flow, "flicker": flicker, "strobe": strobe}
+EFFECTS = {"breathe": breathe, "flow": flow, "undulate": undulate,
+           "flicker": flicker, "strobe": strobe}
 NEEDS_BASE = set(EFFECTS)                        # all effects use current colours
 
 
