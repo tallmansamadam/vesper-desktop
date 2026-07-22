@@ -2,8 +2,9 @@
 //! digital readout - drag up/down, scroll wheel, double-click to reset) and
 //! the iOS-style sliding toggle. Ported from the Tk canvases in lifx_gui.py.
 
-use egui::{Align2, Color32, FontId, Pos2, Sense, Shape, Stroke, Ui, Vec2};
+use egui::{Align2, Color32, FontId, Pos2, Rect, Sense, Shape, Stroke, Ui, Vec2};
 
+use crate::skin;
 use crate::theme;
 
 const SWEEP: f32 = 270.0;
@@ -65,9 +66,30 @@ pub fn knob(
         let c = rect.center();
         let f = ((*value - min) / span).clamp(0.0, 1.0);
 
-        // body
-        painter.circle_filled(c, size / 2.0 - 4.0, theme::KNOB_FACE);
-        painter.circle_stroke(c, size / 2.0 - 4.0, Stroke::new(1.0, theme::STROKE));
+        // metallic bezel: a brushed-steel gradient ring around the face
+        let bez_r = size / 2.0 - 2.0;
+        painter.add(skin::vgrad(
+            Rect::from_center_size(c, Vec2::splat(bez_r * 2.0)),
+            theme::STEEL_TOP,
+            theme::STEEL_BOT,
+        ));
+        painter.circle(
+            c,
+            bez_r,
+            Color32::TRANSPARENT,
+            Stroke::new(1.0, Color32::from_black_alpha(140)),
+        );
+
+        // recessed face + top bevel highlight
+        let face_r = size / 2.0 - 7.0;
+        painter.circle_filled(c, face_r, theme::KNOB_FACE);
+        painter.circle_stroke(c, face_r, Stroke::new(1.0, Color32::from_black_alpha(120)));
+        // glassy sheen: a soft highlight blob in the upper half of the face
+        painter.circle_filled(
+            Pos2::new(c.x, c.y - face_r * 0.42),
+            face_r * 0.55,
+            Color32::from_white_alpha(16),
+        );
 
         // track + value arc
         let arc_r = size / 2.0 - 7.0;

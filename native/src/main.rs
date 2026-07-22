@@ -18,6 +18,7 @@ mod light;
 mod nanoleaf;
 mod scenes;
 mod screen;
+mod skin;
 mod theme;
 mod util;
 mod wiz;
@@ -536,16 +537,25 @@ impl VesperApp {
     // -- UI ----------------------------------------------------------------
 
     fn pill(&self, ui: &mut egui::Ui, label: &str, active: bool) -> egui::Response {
-        let (bg, fg) = if active {
-            (theme::ACCENT_DK, Color32::WHITE)
-        } else {
-            (theme::PANEL_HI, theme::TEXT)
-        };
-        ui.add(
-            egui::Button::new(RichText::new(label).size(10.0).color(fg))
-                .fill(bg)
-                .rounding(Rounding::same(4.0)),
-        )
+        let font = FontId::proportional(10.0);
+        let text_w = ui
+            .fonts(|f| f.layout_no_wrap(label.to_owned(), font.clone(), theme::TEXT).size().x);
+        let (rect, resp) =
+            ui.allocate_exact_size(Vec2::new(text_w + 20.0, 22.0), Sense::click());
+        if ui.is_rect_visible(rect) {
+            let (top, bottom, fg, gloss, glow) = if active {
+                (theme::ACCENT_HI, theme::ACCENT_DK, Color32::WHITE, 78,
+                 Some(theme::ACCENT.gamma_multiply(0.6)))
+            } else if resp.hovered() {
+                (theme::BTN_TOP_HOVER, theme::BTN_BOT_HOVER, theme::TEXT, 46, None)
+            } else {
+                (theme::BTN_TOP, theme::BTN_BOT, theme::TEXT, 30, None)
+            };
+            skin::button(ui.painter(), rect, top, bottom, theme::EDGE, gloss, glow);
+            ui.painter()
+                .text(rect.center(), Align2::CENTER_CENTER, label, font, fg);
+        }
+        resp
     }
 
     fn caption(ui: &mut egui::Ui, text: &str) {
@@ -606,10 +616,8 @@ impl VesperApp {
     }
 
     fn light_card(&mut self, ui: &mut egui::Ui, l: &Arc<Light>, acts: &mut Vec<Act>) {
-        egui::Frame::none()
-            .fill(theme::PANEL)
-            .stroke(Stroke::new(1.0, theme::STROKE))
-            .rounding(Rounding::same(6.0))
+        let card_bg = ui.painter().add(egui::Shape::Noop);
+        let card = egui::Frame::none()
             .inner_margin(egui::Margin::same(12.0))
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
@@ -719,6 +727,10 @@ impl VesperApp {
                     self.pickers.insert(l.id.clone(), rgb);
                 });
             });
+        ui.painter().set(
+            card_bg,
+            skin::panel(card.response.rect, theme::PANEL_TOP, theme::PANEL_BOT, theme::EDGE),
+        );
     }
 }
 
@@ -738,10 +750,15 @@ impl eframe::App for VesperApp {
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::none()
-                    .fill(theme::BG)
+                    .fill(theme::BG_BOT)
                     .inner_margin(egui::Margin::symmetric(14.0, 12.0)),
             )
             .show(ctx, |ui| {
+                // window backdrop: a graphite top-to-bottom gradient behind
+                // everything (painted first, so all content lands on top).
+                ui.painter()
+                    .add(skin::vgrad(ui.clip_rect(), theme::BG_TOP, theme::BG_BOT));
+
                 // ---- toolbar -------------------------------------------------
                 ui.horizontal(|ui| {
                     ui.scope(|ui| {
@@ -750,13 +767,8 @@ impl eframe::App for VesperApp {
                         ui.label(RichText::new("per").size(18.0).strong().color(theme::ACCENT));
                     });
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        let discover =
-                            ui.add_enabled(!self.discovering, egui::Button::new(
-                                RichText::new("Discover").size(10.0).color(theme::TEXT),
-                            )
-                            .fill(theme::PANEL_HI)
-                            .rounding(Rounding::same(4.0)));
-                        if discover.clicked() {
+                        let label = if self.discovering { "Discovering…" } else { "Discover" };
+                        if self.pill(ui, label, false).clicked() && !self.discovering {
                             acts.push(Act::Discover);
                         }
                         if self.pill(ui, "All Off", false).clicked() {
@@ -786,9 +798,8 @@ impl eframe::App for VesperApp {
                 ui.add_space(6.0);
 
                 // ---- master + volume ----------------------------------------
-                egui::Frame::none()
-                    .fill(theme::PANEL_HI)
-                    .rounding(Rounding::same(8.0))
+                let master_bg = ui.painter().add(egui::Shape::Noop);
+                let master_frame = egui::Frame::none()
                     .inner_margin(egui::Margin::symmetric(16.0, 12.0))
                     .show(ui, |ui| {
                         ui.set_width(ui.available_width());
@@ -831,6 +842,15 @@ impl eframe::App for VesperApp {
                             });
                         });
                     });
+                ui.painter().set(
+                    master_bg,
+                    skin::panel(
+                        master_frame.response.rect,
+                        theme::PANELHI_TOP,
+                        theme::PANELHI_BOT,
+                        theme::EDGE,
+                    ),
+                );
                 ui.add_space(8.0);
 
                 // ---- speed + effects + screen sync --------------------------
@@ -851,24 +871,62 @@ impl eframe::App for VesperApp {
                     });
                     ui.add_space(10.0);
                     ui.vertical(|ui| {
+                        // Effects laid out as a small tree: Breathe and Flow on
+                        // the top row, and Undulate branched beneath them (it is
+                        // the two combined), with connector lines drawn between.
+                        let mut breathe_rect = Rect::NOTHING;
+                        let mut flow_rect = Rect::NOTHING;
                         ui.horizontal(|ui| {
                             Self::caption(ui, "EFFECTS");
-                            for mode in [
-                                Mode::Breathe,
-                                Mode::Flow,
-                                Mode::Undulate,
-                                Mode::Flicker,
-                                Mode::Strobe,
-                            ] {
-                                if self
-                                    .pill(ui, mode.label(), self.driver.mode == Some(mode))
-                                    .clicked()
-                                {
-                                    acts.push(Act::Motion(mode));
-                                }
-                            }
+                            let r = self.pill(ui, "Breathe",
+                                self.driver.mode == Some(Mode::Breathe));
+                            if r.clicked() { acts.push(Act::Motion(Mode::Breathe)); }
+                            breathe_rect = r.rect;
+                            let r = self.pill(ui, "Flow",
+                                self.driver.mode == Some(Mode::Flow));
+                            if r.clicked() { acts.push(Act::Motion(Mode::Flow)); }
+                            flow_rect = r.rect;
+                            let r = self.pill(ui, "Flicker",
+                                self.driver.mode == Some(Mode::Flicker));
+                            if r.clicked() { acts.push(Act::Motion(Mode::Flicker)); }
+                            let r = self.pill(ui, "Strobe",
+                                self.driver.mode == Some(Mode::Strobe));
+                            if r.clicked() { acts.push(Act::Motion(Mode::Strobe)); }
                         });
-                        ui.add_space(4.0);
+                        ui.add_space(12.0); // room for the connectors
+                        let mid_x = (breathe_rect.center().x + flow_rect.center().x) * 0.5;
+                        let mut undulate_rect = Rect::NOTHING;
+                        ui.horizontal(|ui| {
+                            let x0 = ui.cursor().left();
+                            ui.add_space((mid_x - x0 - 36.0).max(0.0));
+                            let r = self.pill(ui, "Undulate",
+                                self.driver.mode == Some(Mode::Undulate));
+                            if r.clicked() { acts.push(Act::Motion(Mode::Undulate)); }
+                            undulate_rect = r.rect;
+                        });
+                        // Draw the tree: stubs down from Breathe & Flow to a bus,
+                        // then a drop into Undulate. Lights up when active.
+                        if undulate_rect != Rect::NOTHING {
+                            let active = self.driver.mode == Some(Mode::Undulate);
+                            let stroke = Stroke::new(
+                                1.5,
+                                if active { theme::ACCENT } else { theme::EDGE },
+                            );
+                            let by = breathe_rect.bottom();
+                            let bus_y = by + 6.0;
+                            let bx = breathe_rect.center().x;
+                            let fx = flow_rect.center().x;
+                            let p = ui.painter();
+                            p.line_segment([Pos2::new(bx, by), Pos2::new(bx, bus_y)], stroke);
+                            p.line_segment([Pos2::new(fx, by), Pos2::new(fx, bus_y)], stroke);
+                            p.line_segment([Pos2::new(bx, bus_y), Pos2::new(fx, bus_y)], stroke);
+                            p.line_segment(
+                                [Pos2::new(mid_x, bus_y),
+                                 Pos2::new(undulate_rect.center().x, undulate_rect.top())],
+                                stroke,
+                            );
+                        }
+                        ui.add_space(6.0);
                         ui.horizontal(|ui| {
                             Self::caption(ui, "SCREEN SYNC");
                             for mode in [Mode::Complement, Mode::Augment] {
