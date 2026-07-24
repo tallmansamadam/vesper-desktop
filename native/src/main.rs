@@ -228,6 +228,12 @@ impl VesperApp {
         visuals.panel_fill = theme::BG;
         visuals.override_text_color = Some(theme::TEXT);
         cc.egui_ctx.set_visuals(visuals);
+        // Float the scrollbar over the content instead of insetting the right
+        // edge, so the scrolled area keeps the same left/right margins as the
+        // fixed panels above it.
+        cc.egui_ctx.style_mut(|s| {
+            s.spacing.scroll = egui::style::ScrollStyle::floating();
+        });
 
         let (tx, rx) = channel();
         let ctrl = Arc::new(Controller::new(&root));
@@ -624,9 +630,8 @@ impl VesperApp {
         ui.label(RichText::new(text).size(8.0).color(theme::MUTED));
     }
 
-    fn scene_tile(&self, ui: &mut egui::Ui, sc: &Scene) -> egui::Response {
-        let (rect, resp) =
-            ui.allocate_exact_size(Vec2::new(TILE_W, TILE_H), Sense::click());
+    fn scene_tile(&self, ui: &mut egui::Ui, sc: &Scene, size: Vec2) -> egui::Response {
+        let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
         if ui.is_rect_visible(rect) {
             let painter = ui.painter();
             match self.textures.get(sc.name) {
@@ -928,6 +933,7 @@ impl eframe::App for VesperApp {
                                     if v != self.volume || res.committed.is_some() {
                                         self.volume = v;
                                         self.audio.set_volume(v);
+                                        self.noise.set_master(v);
                                     }
                                     Self::caption(ui, "VOLUME");
                                 });
@@ -947,7 +953,8 @@ impl eframe::App for VesperApp {
                         }
                         if self.noise_open {
                             ui.add_space(6.0);
-                            ui.horizontal(|ui| {
+                            ui.horizontal_wrapped(|ui| {
+                                ui.spacing_mut().item_spacing = Vec2::new(10.0, 8.0);
                                 for k in noise::KINDS {
                                     ui.vertical(|ui| {
                                         let mut v = self.noise.level_pct(k);
@@ -964,7 +971,6 @@ impl eframe::App for VesperApp {
                                         }
                                         Self::caption(ui, k.label());
                                     });
-                                    ui.add_space(10.0);
                                 }
                             });
                         }
@@ -1227,18 +1233,28 @@ impl eframe::App for VesperApp {
                     .show(ui, |ui| {
                         const GAP: f32 = 6.0;
 
-                        // Scenes: fixed-size tiles that wrap to as many columns
-                        // as the current width allows (reflow on resize).
+                        // Scenes: a responsive grid whose tiles grow to fill the
+                        // row exactly (like the light cards below), so both left
+                        // and right margins stay equal at any width. Column count
+                        // comes from a ~150px target; tiles keep their aspect.
                         Self::caption(ui, "SCENES");
                         ui.add_space(4.0);
-                        ui.horizontal_wrapped(|ui| {
-                            ui.spacing_mut().item_spacing = Vec2::splat(GAP);
-                            for (idx, sc) in SCENES.iter().enumerate() {
-                                if self.scene_tile(ui, sc).clicked() {
-                                    acts.push(Act::Scene(idx));
+                        let avail = ui.available_width();
+                        let s_cols = (((avail + GAP) / (TILE_W + GAP)).floor() as usize).max(1);
+                        let tile_w = (avail - GAP * (s_cols as f32 - 1.0)) / s_cols as f32;
+                        let tile_sz = Vec2::new(tile_w, tile_w * (TILE_H / TILE_W));
+                        for row in SCENES.chunks(s_cols) {
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = GAP;
+                                for sc in row {
+                                    let idx = SCENES.iter().position(|s| s.name == sc.name).unwrap();
+                                    if self.scene_tile(ui, sc, tile_sz).clicked() {
+                                        acts.push(Act::Scene(idx));
+                                    }
                                 }
-                            }
-                        });
+                            });
+                            ui.add_space(GAP);
+                        }
                         ui.add_space(8.0);
 
                         Self::caption(ui, "LIGHTS");
