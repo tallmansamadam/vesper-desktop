@@ -27,6 +27,7 @@ mod yeelight;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -58,6 +59,7 @@ enum Msg {
     Texture(&'static str, TextureHandle),
     PlayAmbience(&'static str),
     Rediscover,
+    SunriseDone,
 }
 
 /// Deferred user intents collected during the UI pass (avoids borrow
@@ -205,6 +207,12 @@ struct VesperApp {
     timer_minutes: f32,
     /// When set, the wall-clock instant the sleep timer fires.
     timer_end: Option<Instant>,
+    /// Wake/sunrise alarm: countdown to alarm + ramp length, plus a cancel
+    /// flag for the sunrise ramp thread once it's running.
+    wake_end: Option<Instant>,
+    wake_in_min: f32,
+    wake_rise_min: f32,
+    sunrise_stop: Option<Arc<AtomicBool>>,
     /// Per-light UI mirrors: id -> (brightness knob, white knob).
     knobs: HashMap<String, (f32, f32)>,
     toggles: HashMap<String, bool>,
@@ -245,6 +253,10 @@ impl VesperApp {
             timer_open: false,
             timer_minutes: 30.0,
             timer_end: None,
+            wake_end: None,
+            wake_in_min: 480.0,
+            wake_rise_min: 10.0,
+            sunrise_stop: None,
             knobs: HashMap::new(),
             toggles: HashMap::new(),
             pickers: HashMap::new(),
@@ -269,6 +281,43 @@ impl VesperApp {
             );
             self.toggles.insert(l.id.clone(), l.power());
         }
+    }
+
+    /// Kick off a sunrise ramp: power the lights on dim + warm, then step
+    /// brightness up (and cool the white) over `rise_min` on a worker thread.
+    /// Returns the cancel flag so a later wake/cancel can stop it.
+    fn start_sunrise(&self, ctx: &egui::Context, rise_min: f32) -> Arc<AtomicBool> {
+        let stop = Arc::new(AtomicBool::new(false));
+        let lights = self.lights.clone();
+        let ctrl = self.ctrl.clone();
+        let tx = self.tx.clone();
+        let ctx = ctx.clone();
+        let flag = stop.clone();
+        std::thread::spawn(move || {
+            const STEPS: u32 = 60;
+            let dt = (rise_min * 60.0 / STEPS as f32).max(0.05);
+            for l in &lights {
+                ctrl.set_power(l, true, 1000);
+            }
+            for i in 0..=STEPS {
+                if flag.load(Ordering::Relaxed) {
+                    return;
+                }
+                let t = i as f32 / STEPS as f32;
+                let pct = 2.0 + 98.0 * t; // 2% -> 100%
+                let kelvin = (2000.0 + 2500.0 * t) as u16; // amber -> soft white
+                for l in &lights {
+                    ctrl.set_white(l, pct, kelvin, (dt * 1000.0) as u32);
+                }
+                let _ = tx.send(Msg::Status(format!("Sunrise … {}%", pct as i32), false));
+                let _ = tx.send(Msg::Refresh);
+                ctx.request_repaint();
+                std::thread::sleep(Duration::from_secs_f32(dt));
+            }
+            let _ = tx.send(Msg::Status("Sunrise complete — good morning.".into(), false));
+            let _ = tx.send(Msg::SunriseDone);
+        });
+        stop
     }
 
     fn spawn_discover(&mut self, ctx: &egui::Context) {
@@ -528,6 +577,7 @@ impl VesperApp {
                 }
                 Msg::PlayAmbience(key) => self.audio.play(key),
                 Msg::Rediscover => self.spawn_discover(ctx),
+                Msg::SunriseDone => self.sunrise_stop = None,
             }
         }
     }
@@ -777,6 +827,16 @@ impl eframe::App for VesperApp {
             }
         }
 
+        // Wake/sunrise alarm: at the set time, start the sunrise ramp.
+        if let Some(end) = self.wake_end {
+            if Instant::now() >= end {
+                self.wake_end = None;
+                self.sunrise_stop = Some(self.start_sunrise(ctx, self.wake_rise_min));
+            } else {
+                ctx.request_repaint_after(Duration::from_millis(500));
+            }
+        }
+
         let mut acts: Vec<Act> = Vec::new();
 
         egui::CentralPanel::default()
@@ -966,6 +1026,90 @@ impl eframe::App for VesperApp {
                                             format!(
                                                 "Sleep timer set for {} min — fades off then.",
                                                 self.timer_minutes as i32
+                                            ),
+                                            false,
+                                        );
+                                    }
+                                }
+                            });
+
+                            // wake / sunrise alarm
+                            ui.add_space(8.0);
+                            Self::caption(ui, "WAKE · SUNRISE");
+                            ui.add_space(4.0);
+                            ui.horizontal(|ui| {
+                                if self.sunrise_stop.is_some() {
+                                    ui.label(
+                                        RichText::new("Sunrise running")
+                                            .size(13.0)
+                                            .color(theme::WARM),
+                                    );
+                                    ui.add_space(12.0);
+                                    if self.pill(ui, "Stop", false).clicked() {
+                                        if let Some(s) = self.sunrise_stop.take() {
+                                            s.store(true, Ordering::Relaxed);
+                                        }
+                                        self.set_status("Sunrise stopped.", false);
+                                    }
+                                } else if let Some(end) = self.wake_end {
+                                    let rem =
+                                        end.saturating_duration_since(Instant::now()).as_secs();
+                                    ui.label(
+                                        RichText::new(format!(
+                                            "Wake in {}:{:02}",
+                                            rem / 3600,
+                                            (rem % 3600) / 60
+                                        ))
+                                        .size(14.0)
+                                        .monospace()
+                                        .color(theme::TEXT),
+                                    );
+                                    ui.add_space(12.0);
+                                    if self.pill(ui, "Cancel", false).clicked() {
+                                        self.wake_end = None;
+                                        self.set_status("Wake alarm cancelled.", false);
+                                    }
+                                } else {
+                                    ui.vertical(|ui| {
+                                        let mut m = self.wake_in_min;
+                                        let res = knob(
+                                            ui, &mut m, 5.0, 720.0, 46.0, theme::ACCENT,
+                                            480.0, |v| format!("{}m", v as i32),
+                                        );
+                                        if m != self.wake_in_min
+                                            || res.committed.is_some()
+                                            || res.wheeled
+                                        {
+                                            self.wake_in_min = m;
+                                        }
+                                        Self::caption(ui, "IN");
+                                    });
+                                    ui.add_space(10.0);
+                                    ui.vertical(|ui| {
+                                        let mut m = self.wake_rise_min;
+                                        let res = knob(
+                                            ui, &mut m, 1.0, 30.0, 46.0, theme::WARM,
+                                            10.0, |v| format!("{}m", v as i32),
+                                        );
+                                        if m != self.wake_rise_min
+                                            || res.committed.is_some()
+                                            || res.wheeled
+                                        {
+                                            self.wake_rise_min = m;
+                                        }
+                                        Self::caption(ui, "RISE");
+                                    });
+                                    ui.add_space(12.0);
+                                    if self.pill(ui, "Start wake", false).clicked() {
+                                        self.wake_end = Some(
+                                            Instant::now()
+                                                + Duration::from_secs_f32(self.wake_in_min * 60.0),
+                                        );
+                                        self.set_status(
+                                            format!(
+                                                "Wake alarm in {} min, {} min sunrise.",
+                                                self.wake_in_min as i32,
+                                                self.wake_rise_min as i32
                                             ),
                                             false,
                                         );
