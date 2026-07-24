@@ -19,6 +19,7 @@ mod light;
 mod nanoleaf;
 mod noise;
 mod scenes;
+mod schedule;
 mod screen;
 mod skin;
 mod theme;
@@ -75,6 +76,8 @@ enum Act {
     ApplyCustom(usize),
     SaveScene,
     DeleteScene(usize),
+    AddSchedule,
+    DeleteSchedule(usize),
     Motion(Mode),
     MotionOff,
     Power(Arc<Light>, bool),
@@ -220,6 +223,13 @@ struct VesperApp {
     custom_scenes: Vec<custom::CustomScene>,
     custom_path: PathBuf,
     custom_name: String,
+    schedules: Vec<schedule::Schedule>,
+    sched_path: PathBuf,
+    sched_open: bool,
+    sched_hour: f32,
+    sched_min: f32,
+    sched_days: [bool; 7],
+    sched_scene: String,
     /// Per-light UI mirrors: id -> (brightness knob, white knob).
     knobs: HashMap<String, (f32, f32)>,
     toggles: HashMap<String, bool>,
@@ -273,6 +283,13 @@ impl VesperApp {
             custom_scenes: custom::load(&root.join("custom_scenes.json")),
             custom_path: root.join("custom_scenes.json"),
             custom_name: String::new(),
+            schedules: schedule::load(&root.join("schedules.json")),
+            sched_path: root.join("schedules.json"),
+            sched_open: false,
+            sched_hour: 7.0,
+            sched_min: 0.0,
+            sched_days: [true; 7],
+            sched_scene: "Relax".to_string(),
             knobs: HashMap::new(),
             toggles: HashMap::new(),
             pickers: HashMap::new(),
@@ -536,6 +553,45 @@ impl VesperApp {
                     let name = self.custom_scenes.remove(i).name;
                     custom::save(&self.custom_path, &self.custom_scenes);
                     self.set_status(format!("Deleted scene “{name}”."), false);
+                }
+            }
+            Act::AddSchedule => {
+                let exe = match std::env::current_exe() {
+                    Ok(e) => e,
+                    Err(e) => {
+                        self.set_status(format!("Can't locate the app: {e}"), true);
+                        return;
+                    }
+                };
+                let hour = self.sched_hour as u32;
+                let minute = self.sched_min as u32;
+                let slug = scene_slug(&self.sched_scene);
+                let id = format!("{hour:02}{minute:02}_{slug}_{}", fastrand::u32(1000..9999));
+                let sc = schedule::Schedule {
+                    id,
+                    scene: self.sched_scene.clone(),
+                    hour,
+                    minute,
+                    days: self.sched_days,
+                };
+                match schedule::create_task(&exe, &sc) {
+                    Ok(()) => {
+                        self.set_status(
+                            format!("Scheduled {} at {}.", sc.scene, sc.time_str()),
+                            false,
+                        );
+                        self.schedules.push(sc);
+                        schedule::save(&self.sched_path, &self.schedules);
+                    }
+                    Err(e) => self.set_status(format!("Schedule failed: {e}"), true),
+                }
+            }
+            Act::DeleteSchedule(i) => {
+                if i < self.schedules.len() {
+                    let s = self.schedules.remove(i);
+                    let _ = schedule::delete_task(&s.id);
+                    schedule::save(&self.sched_path, &self.schedules);
+                    self.set_status(format!("Removed schedule for {}.", s.scene), false);
                 }
             }
             Act::Motion(mode) => {
@@ -911,6 +967,108 @@ impl VesperApp {
         ui.painter().set(
             card_bg,
             skin::panel(card.response.rect, theme::PANEL_TOP, theme::PANEL_BOT, theme::EDGE),
+        );
+    }
+
+    /// Every scene name selectable in a schedule: built-ins, the user's saved
+    /// scenes, and the special "All Off".
+    fn all_scene_names(&self) -> Vec<String> {
+        let mut v: Vec<String> = SCENES.iter().map(|s| s.name.to_string()).collect();
+        v.extend(self.custom_scenes.iter().map(|s| s.name.clone()));
+        v.push("All Off".to_string());
+        v
+    }
+
+    /// The always-on scheduler section: lists existing schedules and an add
+    /// row (time knobs, day chips, scene picker) that registers OS tasks.
+    fn schedule_ui(&mut self, ui: &mut egui::Ui, acts: &mut Vec<Act>) {
+        let arrow = if self.sched_open { "-" } else { "+" };
+        let header = format!("{arrow}  Schedules (always-on)");
+        if self.pill(ui, &header, !self.schedules.is_empty()).clicked() {
+            self.sched_open = !self.sched_open;
+        }
+        if !self.sched_open {
+            return;
+        }
+        ui.add_space(6.0);
+
+        // existing schedules
+        let mut del = None;
+        for (i, s) in self.schedules.iter().enumerate() {
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(format!("{}   {}", s.time_str(), s.scene))
+                        .size(12.0)
+                        .monospace()
+                        .color(theme::TEXT),
+                );
+                ui.label(RichText::new(s.days_label()).size(10.0).color(theme::MUTED));
+                if self.pill(ui, "✕", false).clicked() {
+                    del = Some(i);
+                }
+            });
+        }
+        if let Some(i) = del {
+            acts.push(Act::DeleteSchedule(i));
+        }
+
+        ui.add_space(8.0);
+        // add row: HOUR / MIN knobs + scene picker
+        ui.horizontal(|ui| {
+            ui.vertical(|ui| {
+                let mut h = self.sched_hour;
+                let res = knob(ui, &mut h, 0.0, 23.0, 46.0, theme::ACCENT, 7.0,
+                    |v| format!("{:02}", v as i32));
+                if h != self.sched_hour || res.committed.is_some() || res.wheeled {
+                    self.sched_hour = h.round();
+                }
+                Self::caption(ui, "HOUR");
+            });
+            ui.add_space(8.0);
+            ui.vertical(|ui| {
+                let mut m = self.sched_min;
+                let res = knob(ui, &mut m, 0.0, 59.0, 46.0, theme::ACCENT, 0.0,
+                    |v| format!("{:02}", v as i32));
+                if m != self.sched_min || res.committed.is_some() || res.wheeled {
+                    self.sched_min = m.round();
+                }
+                Self::caption(ui, "MIN");
+            });
+            ui.add_space(14.0);
+            ui.vertical(|ui| {
+                ui.add_space(10.0);
+                let names = self.all_scene_names();
+                egui::ComboBox::from_id_salt("sched_scene")
+                    .selected_text(self.sched_scene.clone())
+                    .show_ui(ui, |ui| {
+                        for name in names {
+                            ui.selectable_value(&mut self.sched_scene, name.clone(), name);
+                        }
+                    });
+                Self::caption(ui, "SCENE");
+            });
+        });
+        ui.add_space(6.0);
+        // day chips + add
+        ui.horizontal(|ui| {
+            const ABBR: [&str; 7] = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"];
+            for i in 0..7 {
+                if self.pill(ui, ABBR[i], self.sched_days[i]).clicked() {
+                    self.sched_days[i] = !self.sched_days[i];
+                }
+            }
+            ui.add_space(12.0);
+            if self.pill(ui, "Add schedule", false).clicked() {
+                acts.push(Act::AddSchedule);
+            }
+        });
+        ui.label(
+            RichText::new(
+                "Runs via Windows Task Scheduler — fires even when Vesper is closed, \
+                 while you're signed in.",
+            )
+            .size(8.0)
+            .color(theme::MUTED),
         );
     }
 }
@@ -1446,6 +1604,9 @@ impl eframe::App for VesperApp {
                                 ui.add_space(GAP);
                             }
                         }
+
+                        ui.add_space(10.0);
+                        self.schedule_ui(ui, &mut acts);
                     });
             });
 
@@ -1470,6 +1631,28 @@ fn main() -> eframe::Result<()> {
     // discovery pass and writes what it found (the GUI subsystem has no
     // console to print to).
     let args: Vec<String> = std::env::args().collect();
+
+    // Headless apply: `vesper.exe --apply "<scene>"` (or "All Off") discovers
+    // the lights, applies the scene, and exits. This is what the scheduled
+    // Task Scheduler entries run, so schedules fire without the GUI open.
+    if args.get(1).map(String::as_str) == Some("--apply") {
+        let name = args.get(2).cloned().unwrap_or_default();
+        let ctrl = Controller::new(&root);
+        let lights = ctrl.discover();
+        if name.eq_ignore_ascii_case("All Off") || name.eq_ignore_ascii_case("off") {
+            for l in &lights {
+                ctrl.set_power(l, false, 400);
+            }
+        } else if let Some(sc) = SCENES.iter().find(|s| s.name == name) {
+            apply_scene(&ctrl, &lights, sc, true);
+        } else if let Some(cs) =
+            custom::load(&root.join("custom_scenes.json")).iter().find(|c| c.name == name)
+        {
+            custom::apply(&ctrl, &lights, cs, true);
+        }
+        return Ok(());
+    }
+
     if args.get(1).map(String::as_str) == Some("--discover") {
         let ctrl = Controller::new(&root);
         let start = Instant::now();
