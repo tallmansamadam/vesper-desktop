@@ -26,6 +26,30 @@ pub fn vgrad(rect: Rect, top: Color32, bottom: Color32) -> Shape {
     Shape::Mesh(mesh)
 }
 
+/// A left-to-right gradient through an arbitrary list of colours, as a mesh
+/// strip - used to render a custom scene's palette as a tile background.
+pub fn hgrad_multi(rect: Rect, colors: &[Color32]) -> Shape {
+    if colors.is_empty() {
+        return Shape::Noop;
+    }
+    if colors.len() == 1 {
+        return Shape::rect_filled(rect, Rounding::ZERO, colors[0]);
+    }
+    let mut mesh = Mesh::default();
+    let n = colors.len();
+    for (i, &c) in colors.iter().enumerate() {
+        let x = rect.min.x + rect.width() * i as f32 / (n - 1) as f32;
+        mesh.colored_vertex(pos2(x, rect.min.y), c);
+        mesh.colored_vertex(pos2(x, rect.max.y), c);
+    }
+    for i in 0..(n - 1) as u32 {
+        let l = i * 2;
+        mesh.add_triangle(l, l + 1, l + 2);
+        mesh.add_triangle(l + 1, l + 3, l + 2);
+    }
+    Shape::Mesh(mesh)
+}
+
 /// A vertically-shaded filled disc (top lighter, bottom darker) as a triangle
 /// fan - a round metallic bezel that leaves the corners transparent so it
 /// blends into whatever is behind it, unlike the square [`vgrad`].

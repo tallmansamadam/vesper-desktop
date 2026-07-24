@@ -9,6 +9,7 @@
 mod ambience;
 mod color;
 mod controller;
+mod custom;
 mod effects;
 mod govee;
 mod hue;
@@ -71,6 +72,9 @@ enum Act {
     PairHue,
     PairNano,
     Scene(usize),
+    ApplyCustom(usize),
+    SaveScene,
+    DeleteScene(usize),
     Motion(Mode),
     MotionOff,
     Power(Arc<Light>, bool),
@@ -213,6 +217,9 @@ struct VesperApp {
     wake_in_min: f32,
     wake_rise_min: f32,
     sunrise_stop: Option<Arc<AtomicBool>>,
+    custom_scenes: Vec<custom::CustomScene>,
+    custom_path: PathBuf,
+    custom_name: String,
     /// Per-light UI mirrors: id -> (brightness knob, white knob).
     knobs: HashMap<String, (f32, f32)>,
     toggles: HashMap<String, bool>,
@@ -263,6 +270,9 @@ impl VesperApp {
             wake_in_min: 480.0,
             wake_rise_min: 10.0,
             sunrise_stop: None,
+            custom_scenes: custom::load(&root.join("custom_scenes.json")),
+            custom_path: root.join("custom_scenes.json"),
+            custom_name: String::new(),
             knobs: HashMap::new(),
             toggles: HashMap::new(),
             pickers: HashMap::new(),
@@ -477,6 +487,57 @@ impl VesperApp {
                     ctx2.request_repaint();
                 });
             }
+            Act::ApplyCustom(i) => {
+                self.driver.stop_current();
+                if self.lights.is_empty() {
+                    self.set_status("No lights yet — hit Discover.", true);
+                    return;
+                }
+                let Some(sc) = self.custom_scenes.get(i) else { return };
+                let name = sc.name.clone();
+                let colors = sc.colors.clone();
+                let pct = sc.pct;
+                self.set_status(format!("Applying scene: {name} …"), false);
+                let lights = self.lights.clone();
+                let ctrl = self.ctrl.clone();
+                let tx = self.tx.clone();
+                let ctx2 = ctx.clone();
+                std::thread::spawn(move || {
+                    let cs = custom::CustomScene { name: name.clone(), pct, colors };
+                    custom::apply(&ctrl, &lights, &cs, true);
+                    let _ = tx.send(Msg::Status(format!("Scene: {name}"), false));
+                    let _ = tx.send(Msg::Refresh);
+                    ctx2.request_repaint();
+                });
+            }
+            Act::SaveScene => {
+                let name = self.custom_name.trim().to_string();
+                if name.is_empty() {
+                    self.set_status("Name your scene first.", true);
+                    return;
+                }
+                if self.lights.is_empty() {
+                    self.set_status("No lights to capture — hit Discover.", true);
+                    return;
+                }
+                let sc = custom::capture(name.clone(), &self.lights);
+                // Replace an existing scene of the same name, else append.
+                if let Some(slot) = self.custom_scenes.iter_mut().find(|s| s.name == name) {
+                    *slot = sc;
+                } else {
+                    self.custom_scenes.push(sc);
+                }
+                custom::save(&self.custom_path, &self.custom_scenes);
+                self.custom_name.clear();
+                self.set_status(format!("Saved scene “{name}”."), false);
+            }
+            Act::DeleteScene(i) => {
+                if i < self.custom_scenes.len() {
+                    let name = self.custom_scenes.remove(i).name;
+                    custom::save(&self.custom_path, &self.custom_scenes);
+                    self.set_status(format!("Deleted scene “{name}”."), false);
+                }
+            }
             Act::Motion(mode) => {
                 if self.driver.mode == Some(mode) {
                     self.act(ctx, Act::MotionOff);
@@ -680,6 +741,59 @@ impl VesperApp {
             }
         }
         resp
+    }
+
+    /// A tile for a user-saved scene: its palette painted as a gradient, the
+    /// name, and a corner ✕ to delete it. Left-click applies; the returned
+    /// bool is true when the ✕ was clicked.
+    fn custom_tile(&self, ui: &mut egui::Ui, sc: &custom::CustomScene, size: Vec2) -> (egui::Response, bool) {
+        let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
+        let mut delete = false;
+        if ui.is_rect_visible(rect) {
+            let cols: Vec<Color32> = sc
+                .colors
+                .iter()
+                .map(|c| Color32::from_rgb(c[0], c[1], c[2]))
+                .collect();
+            let painter = ui.painter();
+            painter.add(skin::hgrad_multi(rect, &cols));
+            // darken the lower strip so the name reads
+            painter.rect_filled(
+                Rect::from_min_max(Pos2::new(rect.min.x, rect.max.y - 22.0), rect.max),
+                Rounding::ZERO,
+                Color32::from_black_alpha(120),
+            );
+            let pos = Pos2::new(rect.min.x + 10.0, rect.max.y - 6.0);
+            painter.text(
+                pos,
+                Align2::LEFT_BOTTOM,
+                &sc.name,
+                FontId::proportional(12.0),
+                Color32::WHITE,
+            );
+            // delete ✕ hot-corner (top-right)
+            let x_rect = Rect::from_min_size(
+                Pos2::new(rect.max.x - 18.0, rect.min.y + 2.0),
+                Vec2::splat(16.0),
+            );
+            let x_hover = ui.rect_contains_pointer(x_rect);
+            painter.text(
+                x_rect.center(),
+                Align2::CENTER_CENTER,
+                "✕",
+                FontId::proportional(12.0),
+                if x_hover { theme::ERR } else { Color32::from_white_alpha(150) },
+            );
+            if resp.clicked() && x_hover {
+                delete = true;
+            }
+            painter.rect_stroke(
+                rect,
+                Rounding::ZERO,
+                Stroke::new(1.0, if resp.hovered() { theme::EDGE } else { theme::STROKE }),
+            );
+        }
+        (resp, delete)
     }
 
     fn light_card(&mut self, ui: &mut egui::Ui, l: &Arc<Light>, acts: &mut Vec<Act>) {
@@ -1237,6 +1351,46 @@ impl eframe::App for VesperApp {
                         // row exactly (like the light cards below), so both left
                         // and right margins stay equal at any width. Column count
                         // comes from a ~150px target; tiles keep their aspect.
+                        // My scenes: a save row + a grid of the user's saved
+                        // scenes, sized like the built-ins.
+                        Self::caption(ui, "MY SCENES");
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.custom_name)
+                                    .hint_text("name this look")
+                                    .desired_width(160.0),
+                            );
+                            if self.pill(ui, "Save current", false).clicked() {
+                                acts.push(Act::SaveScene);
+                            }
+                        });
+                        if !self.custom_scenes.is_empty() {
+                            ui.add_space(6.0);
+                            let avail = ui.available_width();
+                            let c_cols =
+                                (((avail + GAP) / (TILE_W + GAP)).floor() as usize).max(1);
+                            let cw = (avail - GAP * (c_cols as f32 - 1.0)) / c_cols as f32;
+                            let csz = Vec2::new(cw, cw * (TILE_H / TILE_W));
+                            let n = self.custom_scenes.len();
+                            for row_start in (0..n).step_by(c_cols) {
+                                ui.horizontal(|ui| {
+                                    ui.spacing_mut().item_spacing.x = GAP;
+                                    for i in row_start..(row_start + c_cols).min(n) {
+                                        let (resp, del) =
+                                            self.custom_tile(ui, &self.custom_scenes[i], csz);
+                                        if del {
+                                            acts.push(Act::DeleteScene(i));
+                                        } else if resp.clicked() {
+                                            acts.push(Act::ApplyCustom(i));
+                                        }
+                                    }
+                                });
+                                ui.add_space(GAP);
+                            }
+                        }
+                        ui.add_space(8.0);
+
                         Self::caption(ui, "SCENES");
                         ui.add_space(4.0);
                         let avail = ui.available_width();
