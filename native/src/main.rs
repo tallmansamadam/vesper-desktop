@@ -98,6 +98,62 @@ enum Act {
 // Assets
 // --------------------------------------------------------------------------
 
+/// Seconds from now until the next occurrence of local clock time `h:m`
+/// (today if it's still ahead, otherwise tomorrow).
+fn secs_until_clock(h: u32, m: u32) -> i64 {
+    use chrono::{Local, NaiveTime, TimeZone};
+    let now = Local::now();
+    let Some(t) = NaiveTime::from_hms_opt(h.min(23), m.min(59), 0) else {
+        return 0;
+    };
+    let mut target = now.date_naive().and_time(t);
+    if target <= now.naive_local() {
+        target += chrono::Duration::days(1);
+    }
+    match Local.from_local_datetime(&target).single() {
+        Some(dt) => (dt - now).num_seconds().max(0),
+        None => 0, // DST gap; caller falls back
+    }
+}
+
+/// "in 7:20" / "in 14m" - how long until an instant, for the timer readouts.
+fn fmt_until(end: Instant) -> String {
+    let s = end.saturating_duration_since(Instant::now()).as_secs();
+    if s >= 3600 {
+        format!("in {}:{:02}", s / 3600, (s % 3600) / 60)
+    } else if s >= 60 {
+        format!("in {}m", s / 60)
+    } else {
+        format!("in {s}s")
+    }
+}
+
+#[cfg(test)]
+mod clock_tests {
+    use super::*;
+    use chrono::Timelike;
+
+    #[test]
+    fn resolves_to_the_next_occurrence() {
+        let now = chrono::Local::now();
+
+        // A time a couple of minutes ahead is today: ~120s away.
+        let soon = now + chrono::Duration::minutes(2);
+        let s = secs_until_clock(soon.hour(), soon.minute());
+        assert!((30..200).contains(&s), "2 min ahead resolved to {s}s");
+
+        // A time just past rolls to tomorrow: ~24h away, never negative.
+        let past = now - chrono::Duration::minutes(2);
+        let p = secs_until_clock(past.hour(), past.minute());
+        assert!(p > 23 * 3600, "2 min ago resolved to {p}s, expected ~24h");
+    }
+
+    #[test]
+    fn out_of_range_input_is_clamped_not_panicking() {
+        assert!(secs_until_clock(99, 99) >= 0);
+    }
+}
+
 fn scene_slug(name: &str) -> String {
     let mut out = String::new();
     let mut last_us = true;
@@ -219,14 +275,16 @@ struct VesperApp {
     noise: noise::Noise,
     noise_open: bool,
     timer_open: bool,
-    timer_minutes: f32,
-    /// When set, the wall-clock instant the sleep timer fires.
+    /// Sleep: the clock time to fade off at, and the instant that resolves to.
+    timer_hour: f32,
+    timer_min: f32,
     timer_end: Option<Instant>,
-    /// Wake/sunrise alarm: countdown to alarm + ramp length, plus a cancel
-    /// flag for the sunrise ramp thread once it's running.
-    wake_end: Option<Instant>,
-    wake_in_min: f32,
+    /// Wake/sunrise: the clock time to wake at, the ramp length, the resolved
+    /// instant, and a cancel flag for the ramp thread once it's running.
+    wake_hour: f32,
+    wake_min: f32,
     wake_rise_min: f32,
+    wake_end: Option<Instant>,
     sunrise_stop: Option<Arc<AtomicBool>>,
     custom_scenes: Vec<custom::CustomScene>,
     custom_path: PathBuf,
@@ -288,11 +346,13 @@ impl VesperApp {
             noise: noise::Noise::new(root.join("audio")),
             noise_open: false,
             timer_open: false,
-            timer_minutes: 30.0,
+            timer_hour: 23.0,
+            timer_min: 0.0,
             timer_end: None,
-            wake_end: None,
-            wake_in_min: 480.0,
+            wake_hour: 7.0,
+            wake_min: 0.0,
             wake_rise_min: 10.0,
+            wake_end: None,
             sunrise_stop: None,
             custom_scenes: custom::load(&root.join("custom_scenes.json")),
             custom_path: root.join("custom_scenes.json"),
@@ -1332,15 +1392,16 @@ impl eframe::App for VesperApp {
                         }
                         if self.timer_open {
                             ui.add_space(6.0);
+                            Self::caption(ui, "SLEEP · FADE OFF AT");
+                            ui.add_space(4.0);
                             ui.horizontal(|ui| {
                                 if let Some(end) = self.timer_end {
-                                    let rem =
-                                        end.saturating_duration_since(Instant::now()).as_secs();
                                     ui.label(
                                         RichText::new(format!(
-                                            "Sleep in {:02}:{:02}",
-                                            rem / 60,
-                                            rem % 60
+                                            "{:02}:{:02}  {}",
+                                            self.timer_hour as i32,
+                                            self.timer_min as i32,
+                                            fmt_until(end)
                                         ))
                                         .size(14.0)
                                         .monospace()
@@ -1353,31 +1414,46 @@ impl eframe::App for VesperApp {
                                     }
                                 } else {
                                     ui.vertical(|ui| {
-                                        let mut m = self.timer_minutes;
+                                        let mut h = self.timer_hour;
                                         let res = knob(
-                                            ui, &mut m, 5.0, 120.0, 46.0, theme::ACCENT,
-                                            30.0, |v| format!("{}m", v as i32),
+                                            ui, &mut h, 0.0, 23.0, 46.0, theme::ACCENT,
+                                            23.0, |v| format!("{:02}", v as i32),
                                         );
-                                        if m != self.timer_minutes
+                                        if h != self.timer_hour
                                             || res.committed.is_some()
                                             || res.wheeled
                                         {
-                                            self.timer_minutes = m;
+                                            self.timer_hour = h.round();
                                         }
-                                        Self::caption(ui, "MINUTES");
+                                        Self::caption(ui, "HOUR");
+                                    });
+                                    ui.add_space(8.0);
+                                    ui.vertical(|ui| {
+                                        let mut m = self.timer_min;
+                                        let res = knob(
+                                            ui, &mut m, 0.0, 59.0, 46.0, theme::ACCENT,
+                                            0.0, |v| format!("{:02}", v as i32),
+                                        );
+                                        if m != self.timer_min
+                                            || res.committed.is_some()
+                                            || res.wheeled
+                                        {
+                                            self.timer_min = m.round();
+                                        }
+                                        Self::caption(ui, "MIN");
                                     });
                                     ui.add_space(12.0);
-                                    if self.pill(ui, "Start sleep", false).clicked() {
-                                        self.timer_end = Some(
-                                            Instant::now()
-                                                + Duration::from_secs_f32(
-                                                    self.timer_minutes * 60.0,
-                                                ),
+                                    if self.pill(ui, "Set sleep", false).clicked() {
+                                        let secs = secs_until_clock(
+                                            self.timer_hour as u32,
+                                            self.timer_min as u32,
                                         );
+                                        self.timer_end =
+                                            Some(Instant::now() + Duration::from_secs(secs as u64));
                                         self.set_status(
                                             format!(
-                                                "Sleep timer set for {} min — fades off then.",
-                                                self.timer_minutes as i32
+                                                "Sleep at {:02}:{:02} — fades everything off then.",
+                                                self.timer_hour as i32, self.timer_min as i32
                                             ),
                                             false,
                                         );
@@ -1387,7 +1463,7 @@ impl eframe::App for VesperApp {
 
                             // wake / sunrise alarm
                             ui.add_space(8.0);
-                            Self::caption(ui, "WAKE · SUNRISE");
+                            Self::caption(ui, "WAKE · SUNRISE AT");
                             ui.add_space(4.0);
                             ui.horizontal(|ui| {
                                 if self.sunrise_stop.is_some() {
@@ -1404,13 +1480,12 @@ impl eframe::App for VesperApp {
                                         self.set_status("Sunrise stopped.", false);
                                     }
                                 } else if let Some(end) = self.wake_end {
-                                    let rem =
-                                        end.saturating_duration_since(Instant::now()).as_secs();
                                     ui.label(
                                         RichText::new(format!(
-                                            "Wake in {}:{:02}",
-                                            rem / 3600,
-                                            (rem % 3600) / 60
+                                            "{:02}:{:02}  {}",
+                                            self.wake_hour as i32,
+                                            self.wake_min as i32,
+                                            fmt_until(end)
                                         ))
                                         .size(14.0)
                                         .monospace()
@@ -1423,18 +1498,33 @@ impl eframe::App for VesperApp {
                                     }
                                 } else {
                                     ui.vertical(|ui| {
-                                        let mut m = self.wake_in_min;
+                                        let mut h = self.wake_hour;
                                         let res = knob(
-                                            ui, &mut m, 5.0, 720.0, 46.0, theme::ACCENT,
-                                            480.0, |v| format!("{}m", v as i32),
+                                            ui, &mut h, 0.0, 23.0, 46.0, theme::ACCENT,
+                                            7.0, |v| format!("{:02}", v as i32),
                                         );
-                                        if m != self.wake_in_min
+                                        if h != self.wake_hour
                                             || res.committed.is_some()
                                             || res.wheeled
                                         {
-                                            self.wake_in_min = m;
+                                            self.wake_hour = h.round();
                                         }
-                                        Self::caption(ui, "IN");
+                                        Self::caption(ui, "HOUR");
+                                    });
+                                    ui.add_space(8.0);
+                                    ui.vertical(|ui| {
+                                        let mut m = self.wake_min;
+                                        let res = knob(
+                                            ui, &mut m, 0.0, 59.0, 46.0, theme::ACCENT,
+                                            0.0, |v| format!("{:02}", v as i32),
+                                        );
+                                        if m != self.wake_min
+                                            || res.committed.is_some()
+                                            || res.wheeled
+                                        {
+                                            self.wake_min = m.round();
+                                        }
+                                        Self::caption(ui, "MIN");
                                     });
                                     ui.add_space(10.0);
                                     ui.vertical(|ui| {
@@ -1452,15 +1542,24 @@ impl eframe::App for VesperApp {
                                         Self::caption(ui, "RISE");
                                     });
                                     ui.add_space(12.0);
-                                    if self.pill(ui, "Start wake", false).clicked() {
-                                        self.wake_end = Some(
-                                            Instant::now()
-                                                + Duration::from_secs_f32(self.wake_in_min * 60.0),
+                                    if self.pill(ui, "Set wake", false).clicked() {
+                                        // The ramp should *finish* at the set
+                                        // time, so start it a rise-length early
+                                        // - you wake to full light, not to the
+                                        // first ember.
+                                        let secs = secs_until_clock(
+                                            self.wake_hour as u32,
+                                            self.wake_min as u32,
                                         );
+                                        let lead = (self.wake_rise_min * 60.0) as i64;
+                                        let start = (secs - lead).max(0) as u64;
+                                        self.wake_end =
+                                            Some(Instant::now() + Duration::from_secs(start));
                                         self.set_status(
                                             format!(
-                                                "Wake alarm in {} min, {} min sunrise.",
-                                                self.wake_in_min as i32,
+                                                "Wake at {:02}:{:02} — {} min sunrise starts before.",
+                                                self.wake_hour as i32,
+                                                self.wake_min as i32,
                                                 self.wake_rise_min as i32
                                             ),
                                             false,
