@@ -108,6 +108,31 @@ impl Wiz {
         lights
     }
 
+    /// Ask a specific address whether it's a WiZ bulb (for "add by IP").
+    pub fn probe(&self, ip: &str) -> Option<Arc<Light>> {
+        let _guard = self.io.lock().unwrap();
+        let msg = json!({"method": "getPilot", "params": {}}).to_string();
+        self.cmd.send_to(msg.as_bytes(), (ip, PORT)).ok()?;
+        let mut buf = [0u8; 2048];
+        let (n, _) = self.cmd.recv_from(&mut buf).ok()?;
+        let v: Value = serde_json::from_slice(&buf[..n]).ok()?;
+        let res = &v["result"];
+        let mac = res.get("mac").and_then(Value::as_str)?;
+        let tail: String = mac.chars().rev().take(6).collect::<Vec<_>>()
+            .into_iter().rev().collect();
+        let l = Light::new(
+            Vendor::Wiz,
+            format!("wiz:{mac}"),
+            ip.to_string(),
+            PORT,
+            0,
+            format!("WiZ {tail}"),
+        );
+        l.set_power_state(res.get("state").and_then(Value::as_bool).unwrap_or(false));
+        l.set_hsbk(state_to_hsbk(res));
+        Some(l)
+    }
+
     fn send(&self, light: &Light, params: Value) {
         let msg = json!({"method": "setPilot", "params": params}).to_string();
         let _ = self.cmd.send_to(msg.as_bytes(), (light.ip.as_str(), PORT));

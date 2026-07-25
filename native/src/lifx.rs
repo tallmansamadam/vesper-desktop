@@ -163,6 +163,47 @@ impl LifxLan {
         lights
     }
 
+    /// Ask a specific address whether it's a LIFX device, returning its serial.
+    /// Used by "add by IP" when broadcast discovery can't reach it (other
+    /// subnet, AP isolation, VPN).
+    pub fn probe_target(&self, ip: &str) -> Option<u64> {
+        let seq = self.next_seq();
+        let pkt = make_packet(MSG_GET_SERVICE, &[], 0, false, true, false, seq);
+        let _guard = self.rx.lock().unwrap();
+        let mut buf = [0u8; 1024];
+        for _ in 0..2 {
+            let _ = self.sock.send_to(&pkt, (ip, PORT));
+            let deadline = Instant::now() + Duration::from_millis(700);
+            while Instant::now() < deadline {
+                match self.sock.recv_from(&mut buf) {
+                    Ok((n, addr)) => {
+                        if addr.ip().to_string() == ip {
+                            if let Some((target, _s, m)) = parse_header(&buf[..n]) {
+                                if m == MSG_STATE_SERVICE && target != 0 {
+                                    return Some(target);
+                                }
+                            }
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        }
+        None
+    }
+
+    /// Build a Light for an already-probed serial (no lock held).
+    pub fn light_for(&self, ip: &str, target: u64) -> Arc<Light> {
+        Light::new(
+            Vendor::Lifx,
+            serial_hex(target),
+            ip.to_string(),
+            PORT,
+            target,
+            serial_hex(target),
+        )
+    }
+
     // -- low-level send ----------------------------------------------------
 
     /// Send with ack_required, retrying on loss. Returns whether the bulb

@@ -157,6 +157,34 @@ impl Govee {
         lights
     }
 
+    /// Ask a specific address whether it's a Govee device with LAN Control on
+    /// (for "add by IP").
+    pub fn probe(&self, ip: &str) -> Option<Arc<Light>> {
+        self.rx.as_ref()?;
+        let _guard = self.io.lock().unwrap();
+        self.drain();
+        self.send(ip, CTRL_PORT, "devStatus", json!({}));
+        let mut state: Option<Value> = None;
+        let want = ip.to_string();
+        self.collect(Duration::from_millis(900), |cmd, d, src| {
+            if cmd == "devStatus" && src == want {
+                state = Some(d.clone());
+            }
+        });
+        let d = state?;
+        let l = Light::new(
+            Vendor::Govee,
+            format!("govee:{ip}"),
+            ip.to_string(),
+            CTRL_PORT,
+            0,
+            "Govee".to_string(),
+        );
+        l.set_power_state(d.get("onOff").and_then(Value::as_f64).unwrap_or(0.0) > 0.0);
+        l.set_hsbk(status_to_hsbk(&d));
+        Some(l)
+    }
+
     fn refresh_locked(&self, light: &Light) {
         self.drain();
         self.send(&light.ip, CTRL_PORT, "devStatus", json!({}));

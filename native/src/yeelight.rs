@@ -114,6 +114,22 @@ impl Yeelight {
         lights
     }
 
+    /// Ask a specific address whether it's a Yeelight (for "add by IP").
+    pub fn probe(&self, ip: &str) -> Option<Arc<Light>> {
+        let l = Light::new(
+            Vendor::Yeelight,
+            format!("yeelight:{ip}"),
+            ip.to_string(),
+            55443,
+            0,
+            "Yeelight".to_string(),
+        );
+        // A successful get_prop is proof enough that something is there.
+        self.cmd(&l, "get_prop", json!(["power"]))?;
+        self.refresh(&l);
+        Some(l)
+    }
+
     // -- TCP command channel ----------------------------------------------
 
     fn cmd(&self, light: &Light, method: &str, params: Value) -> Option<Value> {

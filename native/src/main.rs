@@ -65,6 +65,17 @@ enum Msg {
     PlayAmbience(&'static str),
     Rediscover,
     SunriseDone,
+    AddLight(Arc<Light>),
+}
+
+/// The "how to add these lights" dialogs. Adding a brand always needs a step
+/// on the hardware itself, so each button explains what to do before it starts
+/// waiting for it.
+#[derive(Clone, Copy, PartialEq)]
+enum Dialog {
+    Hue,
+    Nanoleaf,
+    ByIp,
 }
 
 /// Deferred user intents collected during the UI pass (avoids borrow
@@ -81,6 +92,7 @@ enum Act {
     DeleteScene(usize),
     AddSchedule,
     DeleteSchedule(usize),
+    AddByIp,
     Motion(Mode),
     MotionOff,
     Power(Arc<Light>, bool),
@@ -319,6 +331,8 @@ struct VesperApp {
     splash: splash::Splash,
     theme_idx: usize,
     settings_path: PathBuf,
+    manual_ip: String,
+    dialog: Option<Dialog>,
     /// When the UI began assembling itself under the fading splash.
     intro_start: Option<Instant>,
     /// A brief tint in a scene's own colour, as feedback that it was applied.
@@ -409,6 +423,8 @@ impl VesperApp {
             splash: splash::Splash::new(),
             theme_idx: theme::index(),
             settings_path,
+            manual_ip: String::new(),
+            dialog: None,
             intro_start: None,
             scene_flash: None,
             knobs: HashMap::new(),
@@ -730,6 +746,42 @@ impl VesperApp {
                     self.set_status(format!("Removed schedule for {}.", s.scene), false);
                 }
             }
+            Act::AddByIp => {
+                let ip = self.manual_ip.trim().to_string();
+                if ip.is_empty() {
+                    self.set_status("Enter the light's IP address first.", true);
+                    return;
+                }
+                if self.lights.iter().any(|l| l.ip == ip) {
+                    self.set_status(format!("{ip} is already in the list."), true);
+                    return;
+                }
+                self.set_status(format!("Looking for a light at {ip} …"), false);
+                let ctrl = self.ctrl.clone();
+                let tx = self.tx.clone();
+                let ctx2 = ctx.clone();
+                std::thread::spawn(move || {
+                    match ctrl.add_by_ip(&ip) {
+                        Some(l) => {
+                            let _ = tx.send(Msg::Status(
+                                format!("Added {} at {ip}.", l.vendor.name()),
+                                false,
+                            ));
+                            let _ = tx.send(Msg::AddLight(l));
+                        }
+                        None => {
+                            let _ = tx.send(Msg::Status(
+                                format!(
+                                    "Nothing answered at {ip}. Check the address, and \
+                                     that LAN control is enabled for the device."
+                                ),
+                                true,
+                            ));
+                        }
+                    }
+                    ctx2.request_repaint();
+                });
+            }
             Act::Motion(mode) => {
                 if self.driver.mode == Some(mode) {
                     self.act(ctx, Act::MotionOff);
@@ -853,6 +905,20 @@ impl VesperApp {
                 Msg::PlayAmbience(key) => self.audio.play(key),
                 Msg::Rediscover => self.spawn_discover(ctx),
                 Msg::SunriseDone => self.sunrise_stop = None,
+                Msg::AddLight(l) => {
+                    if !self.lights.iter().any(|x| x.id == l.id) {
+                        self.lights.push(l);
+                        self.lights.sort_by(|a, b| {
+                            (a.vendor.name(), a.label().to_lowercase())
+                                .cmp(&(b.vendor.name(), b.label().to_lowercase()))
+                        });
+                        if let Ok(mut shared) = self.shared_lights.lock() {
+                            shared.clone_from(&self.lights);
+                        }
+                        self.manual_ip.clear();
+                        self.sync_from_lights();
+                    }
+                }
             }
         }
     }
@@ -905,6 +971,105 @@ impl VesperApp {
         let ms = start.elapsed().as_secs_f32() * 1000.0 - idx as f32 * 85.0;
         let a = (ms / 400.0).clamp(0.0, 1.0);
         1.0 - (1.0 - a) * (1.0 - a) // ease out
+    }
+
+    /// The add-a-brand dialog: what to do on the hardware, then the button
+    /// that starts waiting for it. Dismissed by its own Cancel or by clicking
+    /// away from it.
+    fn dialog_ui(&mut self, ctx: &egui::Context, acts: &mut Vec<Act>) {
+        let Some(kind) = self.dialog else { return };
+        let screen = ctx.screen_rect();
+
+        // Scrim: dims the app and swallows the click that dismisses.
+        egui::Area::new(egui::Id::new("dlg_scrim"))
+            .order(egui::Order::Middle)
+            .fixed_pos(screen.min)
+            .show(ctx, |ui| {
+                let r = ui.allocate_response(screen.size(), Sense::click());
+                ui.painter()
+                    .rect_filled(screen, Rounding::ZERO, Color32::from_black_alpha(150));
+                if r.clicked() {
+                    self.dialog = None;
+                }
+            });
+
+        let (title, body, action) = match kind {
+            Dialog::Hue => (
+                "Add Philips Hue",
+                "Hue bulbs are paired through the Bridge, not found on the network.\n\n\
+                 1.  Press the round link button on top of your Hue Bridge.\n\
+                 2.  Choose Start pairing below within 30 seconds.\n\n\
+                 Once paired, Vesper remembers the Bridge - you only do this once.",
+                Some("Start pairing"),
+            ),
+            Dialog::Nanoleaf => (
+                "Add Nanoleaf",
+                "Nanoleaf panels pair from the controller itself.\n\n\
+                 1.  Hold the panel's power button for 5-7 seconds, until the\n     LEDs flash in sequence.\n\
+                 2.  Choose Start pairing below within 25 seconds.\n\n\
+                 Once paired, Vesper remembers the panels - you only do this once.",
+                Some("Start pairing"),
+            ),
+            Dialog::ByIp => (
+                "Add a light by address",
+                "LIFX, WiZ, Yeelight and Govee are normally found automatically by\n\
+                 Discover. Use this when one doesn't appear - on a guest network,\n\
+                 another subnet, or with AP isolation on.\n\n\
+                 Govee and Yeelight also need LAN control switched on in their own\n\
+                 app first. Enter the light's IP address:",
+                Some("Add light"),
+            ),
+        };
+
+        egui::Area::new(egui::Id::new("dlg"))
+            .order(egui::Order::Foreground)
+            .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                let bg = ui.painter().add(egui::Shape::Noop);
+                let frame = egui::Frame::none()
+                    .inner_margin(egui::Margin::same(18.0))
+                    .show(ui, |ui| {
+                        ui.set_width(400.0);
+                        ui.label(
+                            RichText::new(title).size(15.0).strong().color(theme::text()),
+                        );
+                        ui.add_space(8.0);
+                        ui.label(RichText::new(body).size(11.0).color(theme::muted()));
+                        if kind == Dialog::ByIp {
+                            ui.add_space(8.0);
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.manual_ip)
+                                    .hint_text("192.168.1.42")
+                                    .desired_width(180.0),
+                            );
+                        }
+                        ui.add_space(14.0);
+                        ui.horizontal(|ui| {
+                            if let Some(label) = action {
+                                if self.pill(ui, label, true).clicked() {
+                                    match kind {
+                                        Dialog::Hue => acts.push(Act::PairHue),
+                                        Dialog::Nanoleaf => acts.push(Act::PairNano),
+                                        Dialog::ByIp => acts.push(Act::AddByIp),
+                                    }
+                                    self.dialog = None;
+                                }
+                            }
+                            if self.pill(ui, "Cancel", false).clicked() {
+                                self.dialog = None;
+                            }
+                        });
+                    });
+                ui.painter().set(
+                    bg,
+                    skin::panel(
+                        frame.response.rect,
+                        theme::panelhi_top(),
+                        theme::panelhi_bot(),
+                        theme::edge(),
+                    ),
+                );
+            });
     }
 
     fn caption(ui: &mut egui::Ui, text: &str) {
@@ -1373,10 +1538,13 @@ impl eframe::App for VesperApp {
                             acts.push(Act::ToggleSound);
                         }
                         if self.pill(ui, "+ Hue", false).clicked() {
-                            acts.push(Act::PairHue);
+                            self.dialog = Some(Dialog::Hue);
                         }
                         if self.pill(ui, "+ Nanoleaf", false).clicked() {
-                            acts.push(Act::PairNano);
+                            self.dialog = Some(Dialog::Nanoleaf);
+                        }
+                        if self.pill(ui, "+ By IP", false).clicked() {
+                            self.dialog = Some(Dialog::ByIp);
                         }
                         // theme picker
                         let before = self.theme_idx;
@@ -1900,6 +2068,11 @@ impl eframe::App for VesperApp {
                     });
             });
 
+        // The add-a-brand dialog sits above the app but below the splash.
+        let mut dlg_acts: Vec<Act> = Vec::new();
+        self.dialog_ui(ctx, &mut dlg_acts);
+        acts.extend(dlg_acts);
+
         for act in acts {
             self.act(ctx, act);
         }
@@ -2014,6 +2187,29 @@ fn main() -> eframe::Result<()> {
         n.stop();
         let path = args.get(2).cloned().unwrap_or_else(|| "noisecheck.txt".into());
         let _ = std::fs::write(path, report);
+        return Ok(());
+    }
+
+    // Headless check of "add by IP": `vesper.exe --probe <ip> [out.txt]`.
+    if args.get(1).map(String::as_str) == Some("--probe") {
+        let ip = args.get(2).cloned().unwrap_or_default();
+        let ctrl = Controller::new(&root);
+        let t = Instant::now();
+        let found = ctrl.add_by_ip(&ip);
+        let out = match &found {
+            Some(l) => format!(
+                "FOUND {} '{}' at {} in {:?}\n  power={} hsbk={:?}\n",
+                l.vendor.name(),
+                l.label(),
+                l.ip,
+                t.elapsed(),
+                l.power(),
+                l.hsbk()
+            ),
+            None => format!("nothing answered at {ip} ({:?})\n", t.elapsed()),
+        };
+        let path = args.get(3).cloned().unwrap_or_else(|| "probe.txt".into());
+        let _ = std::fs::write(path, out);
         return Ok(());
     }
 

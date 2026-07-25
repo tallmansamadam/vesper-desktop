@@ -124,6 +124,28 @@ impl Controller {
         }
     }
 
+    /// Add a light by address, for when broadcast discovery can't reach it
+    /// (another subnet, AP isolation, a VPN in the way). Asks each bridge-free
+    /// brand in turn and returns whichever answers - so the user types an IP
+    /// and doesn't have to know the make.
+    ///
+    /// Hue and Nanoleaf are absent by design: they need pairing, not an
+    /// address, which is what the "+ Hue" / "+ Nanoleaf" buttons do.
+    pub fn add_by_ip(&self, ip: &str) -> Option<Arc<Light>> {
+        if let Some(target) = self.lifx.probe_target(ip) {
+            let l = self.lifx.light_for(ip, target);
+            self.lifx.refresh(&l);
+            return Some(l);
+        }
+        if let Some(l) = self.wiz.probe(ip) {
+            return Some(l);
+        }
+        if let Some(l) = self.yeelight.probe(ip) {
+            return Some(l);
+        }
+        self.govee.probe(ip)
+    }
+
     pub fn set_rgb(&self, l: &Light, r: u8, g: u8, b: u8, d: u32) {
         let hsbk = crate::color::rgb_to_hsbk(r, g, b, 3500);
         let cur = l.hsbk();
