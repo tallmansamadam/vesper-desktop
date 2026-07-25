@@ -16,6 +16,7 @@ mod hue;
 mod knob;
 mod lifx;
 mod light;
+mod music;
 mod nanoleaf;
 mod noise;
 mod scenes;
@@ -213,6 +214,7 @@ struct VesperApp {
     speed_ui: f32,
     driver: Driver,
     audio: Ambience,
+    music: music::Music,
     noise: noise::Noise,
     noise_open: bool,
     timer_open: bool,
@@ -263,6 +265,7 @@ impl VesperApp {
         let ctrl = Arc::new(Controller::new(&root));
         spawn_texture_loader(root.clone(), cc.egui_ctx.clone(), tx.clone());
         let sys = system::init(&root, tx.clone(), cc.egui_ctx.clone());
+        let music = music::Music::new();
 
         let mut app = VesperApp {
             ctrl,
@@ -277,8 +280,9 @@ impl VesperApp {
             master: 100.0,
             volume: 60.0,
             speed_ui: 100.0,
-            driver: Driver::new(),
+            driver: Driver::new(music.level_handle()),
             audio: Ambience::new(root.join("audio")),
+            music,
             noise: noise::Noise::new(),
             noise_open: false,
             timer_open: false,
@@ -613,11 +617,24 @@ impl VesperApp {
                     self.set_status("No lights yet — hit Discover.", true);
                     return;
                 }
+                if mode == Mode::Music {
+                    if !self.music.start() {
+                        self.set_status(
+                            "Couldn't capture system audio — play something first.",
+                            true,
+                        );
+                        return;
+                    }
+                }
                 self.driver.start(mode, self.ctrl.clone(), self.lights.clone());
                 let label = mode.label();
                 match mode {
                     Mode::Complement | Mode::Augment => self.set_status(
                         format!("Screen sync: {label} — matching your screen…"),
+                        false,
+                    ),
+                    Mode::Music => self.set_status(
+                        "Music: lights follow your PC's audio.",
                         false,
                     ),
                     _ => self.set_status(format!("Effect: {label}"), false),
@@ -1102,6 +1119,12 @@ impl eframe::App for VesperApp {
         self.drain_messages(ctx);
         self.flush_pending(ctx);
 
+        // Release the audio capture whenever we're not in Music mode (however
+        // the mode ended - MotionOff, a scene tap, discovery, etc).
+        if self.driver.mode != Some(Mode::Music) && self.music.active() {
+            self.music.stop();
+        }
+
         // Close button minimises to the tray instead of quitting (unless the
         // tray's Quit was chosen, which sets really_quit).
         if ctx.input(|i| i.viewport().close_requested()) && !self.really_quit {
@@ -1522,8 +1545,8 @@ impl eframe::App for VesperApp {
                         }
                         ui.add_space(6.0);
                         ui.horizontal(|ui| {
-                            Self::caption(ui, "SCREEN SYNC");
-                            for mode in [Mode::Complement, Mode::Augment] {
+                            Self::caption(ui, "SYNC");
+                            for mode in [Mode::Complement, Mode::Augment, Mode::Music] {
                                 if self
                                     .pill(ui, mode.label(), self.driver.mode == Some(mode))
                                     .clicked()
@@ -1661,6 +1684,7 @@ impl Drop for VesperApp {
         self.driver.stop_current();
         self.audio.stop();
         self.noise.stop();
+        self.music.stop();
     }
 }
 
@@ -1690,6 +1714,41 @@ fn main() -> eframe::Result<()> {
         {
             custom::apply(&ctrl, &lights, cs, true);
         }
+        return Ok(());
+    }
+
+    // Headless audio-loopback self-test: play a tone and check the music
+    // capture's level responds. `vesper.exe --audiocheck [out.txt]`.
+    if args.get(1).map(String::as_str) == Some("--audiocheck") {
+        use rodio::Source;
+        let mut maxv = 0u32;
+        let started;
+        {
+            let (_stream, handle) = rodio::OutputStream::try_default().expect("audio out");
+            let sink = rodio::Sink::try_new(&handle).expect("sink");
+            sink.append(
+                rodio::source::SineWave::new(440.0)
+                    .amplify(0.3)
+                    .take_duration(Duration::from_secs(3)),
+            );
+            let mut m = music::Music::new();
+            started = m.start();
+            let lvl = m.level_handle();
+            for _ in 0..28 {
+                std::thread::sleep(Duration::from_millis(100));
+                maxv = maxv.max(lvl.load(std::sync::atomic::Ordering::Relaxed));
+            }
+        }
+        let path = args.get(2).cloned().unwrap_or_else(|| "audiocheck.txt".into());
+        let _ = std::fs::write(
+            path,
+            format!(
+                "loopback stream started: {started}\n\
+                 max captured level (0..1000): {maxv}\n\
+                 verdict: {}\n",
+                if maxv > 20 { "LOOPBACK WORKS" } else { "no signal captured" }
+            ),
+        );
         return Ok(());
     }
 

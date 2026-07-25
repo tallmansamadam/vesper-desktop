@@ -17,6 +17,7 @@ socket2 = "0.5"
 fastrand = "2"
 tray-icon = "0.19"
 global-hotkey = "0.6"
+cpal = "0.15"
 
 [profile.release]
 opt-level = 2
