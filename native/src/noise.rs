@@ -241,8 +241,13 @@ impl Iterator for NoiseGen {
         let p = pink_next(&mut self.pink, w);
         mix += self.lvl(1) * p;
 
-        self.brown = (self.brown + 0.02 * w).clamp(-1.0, 1.0);
-        mix += self.lvl(2) * self.brown * 3.5;
+        // Brown noise is integrated white, but a *pure* integrator is a random
+        // walk: it wanders to the rails and sticks, and clamping it there
+        // turns the output into stretches of full scale - which crackles and
+        // stutters rather than rumbling. The leak pulls it back toward centre
+        // so it stays in range without clipping.
+        self.brown = 0.995 * self.brown + 0.02 * w;
+        mix += self.lvl(2) * self.brown * 2.2;
 
         let sp = pink_next(&mut self.surf_pink, w);
         self.surf_phase = (self.surf_phase + TAU * 0.09 / SRF) % TAU;
@@ -282,7 +287,9 @@ impl Iterator for NoiseGen {
         // (Recorded layers - Fountain/Chimes/Birds/Cicadas/Cafe/City/Shore -
         // play in their own sinks; they contribute nothing here.)
 
-        Some((mix * 0.9 * master).clamp(-1.0, 1.0))
+        // Soft-clip the sum. Layers add up, and a hard clamp on the overshoot
+        // is audible as crackle; tanh bends the peaks instead of shearing them.
+        Some((mix * 0.9 * master).tanh())
     }
 }
 
@@ -531,6 +538,34 @@ mod tests {
             rms(&take(&mut half, 4000)) < rms(&take(&mut full, 4000)),
             "master gain did not attenuate"
         );
+    }
+
+    /// Fraction of samples pinned at (or beyond) full scale.
+    fn clipped_fraction(s: &[f32]) -> f32 {
+        s.iter().filter(|x| x.abs() > 0.995).count() as f32 / s.len() as f32
+    }
+
+    #[test]
+    fn brown_stays_in_range_instead_of_railing() {
+        // A pure random walk wanders to the rails and sticks; clamping it
+        // there is what made the brown-heavy scenes crackle.
+        let s = take(&mut gen(one(2, 100.0)), 200_000);
+        let clip = clipped_fraction(&s);
+        assert!(clip < 0.01, "brown clipped {:.1}% of samples", clip * 100.0);
+        let peak = s.iter().fold(0.0f32, |m, x| m.max(x.abs()));
+        assert!(peak > 0.2, "brown too quiet to be heard: peak {peak}");
+    }
+
+    #[test]
+    fn a_loud_stack_of_layers_does_not_shear() {
+        // Engine Room's shape: lots of brown under white and pink.
+        let mut levels = [0.0; N];
+        levels[0] = 20.0; // white
+        levels[1] = 18.0; // pink
+        levels[2] = 62.0; // brown
+        let s = take(&mut gen(levels), 200_000);
+        let clip = clipped_fraction(&s);
+        assert!(clip < 0.01, "stacked layers clipped {:.1}%", clip * 100.0);
     }
 
     #[test]
