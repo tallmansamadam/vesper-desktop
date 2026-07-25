@@ -18,6 +18,7 @@ mod lifx;
 mod light;
 mod music;
 mod nanoleaf;
+mod nixie;
 mod noise;
 mod scenes;
 mod schedule;
@@ -1344,25 +1345,7 @@ impl VesperApp {
         ui.add_space(8.0);
         // add row: HOUR / MIN knobs + scene picker
         ui.horizontal(|ui| {
-            ui.vertical(|ui| {
-                let mut h = self.sched_hour;
-                let res = knob(ui, &mut h, 0.0, 23.0, 46.0, theme::accent(), 7.0,
-                    |v| format!("{:02}", v as i32));
-                if h != self.sched_hour || res.committed.is_some() || res.wheeled {
-                    self.sched_hour = h.round();
-                }
-                Self::caption(ui, "HOUR");
-            });
-            ui.add_space(8.0);
-            ui.vertical(|ui| {
-                let mut m = self.sched_min;
-                let res = knob(ui, &mut m, 0.0, 59.0, 46.0, theme::accent(), 0.0,
-                    |v| format!("{:02}", v as i32));
-                if m != self.sched_min || res.committed.is_some() || res.wheeled {
-                    self.sched_min = m.round();
-                }
-                Self::caption(ui, "MIN");
-            });
+            nixie::time(ui, "sched", &mut self.sched_hour, &mut self.sched_min);
             ui.add_space(14.0);
             ui.vertical(|ui| {
                 ui.add_space(10.0);
@@ -1574,6 +1557,14 @@ impl eframe::App for VesperApp {
                 );
                 ui.add_space(6.0);
 
+                // Everything below the toolbar scrolls as one. The master
+                // panel grows a lot when Noise/Timer are expanded, so if only
+                // the lower half scrolled it would push the rest out of the
+                // window entirely.
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+
                 // ---- master + volume ----------------------------------------
                 ui.set_opacity(self.intro_alpha(1));
                 let master_bg = ui.painter().add(egui::Shape::Noop);
@@ -1696,35 +1687,12 @@ impl eframe::App for VesperApp {
                                         self.set_status("Sleep timer cancelled.", false);
                                     }
                                 } else {
-                                    ui.vertical(|ui| {
-                                        let mut h = self.timer_hour;
-                                        let res = knob(
-                                            ui, &mut h, 0.0, 23.0, 46.0, theme::accent(),
-                                            23.0, |v| format!("{:02}", v as i32),
-                                        );
-                                        if h != self.timer_hour
-                                            || res.committed.is_some()
-                                            || res.wheeled
-                                        {
-                                            self.timer_hour = h.round();
-                                        }
-                                        Self::caption(ui, "HOUR");
-                                    });
-                                    ui.add_space(8.0);
-                                    ui.vertical(|ui| {
-                                        let mut m = self.timer_min;
-                                        let res = knob(
-                                            ui, &mut m, 0.0, 59.0, 46.0, theme::accent(),
-                                            0.0, |v| format!("{:02}", v as i32),
-                                        );
-                                        if m != self.timer_min
-                                            || res.committed.is_some()
-                                            || res.wheeled
-                                        {
-                                            self.timer_min = m.round();
-                                        }
-                                        Self::caption(ui, "MIN");
-                                    });
+                                    nixie::time(
+                                        ui,
+                                        "sleep",
+                                        &mut self.timer_hour,
+                                        &mut self.timer_min,
+                                    );
                                     ui.add_space(12.0);
                                     if self.pill(ui, "Set sleep", false).clicked() {
                                         let secs = secs_until_clock(
@@ -1780,35 +1748,12 @@ impl eframe::App for VesperApp {
                                         self.set_status("Wake alarm cancelled.", false);
                                     }
                                 } else {
-                                    ui.vertical(|ui| {
-                                        let mut h = self.wake_hour;
-                                        let res = knob(
-                                            ui, &mut h, 0.0, 23.0, 46.0, theme::accent(),
-                                            7.0, |v| format!("{:02}", v as i32),
-                                        );
-                                        if h != self.wake_hour
-                                            || res.committed.is_some()
-                                            || res.wheeled
-                                        {
-                                            self.wake_hour = h.round();
-                                        }
-                                        Self::caption(ui, "HOUR");
-                                    });
-                                    ui.add_space(8.0);
-                                    ui.vertical(|ui| {
-                                        let mut m = self.wake_min;
-                                        let res = knob(
-                                            ui, &mut m, 0.0, 59.0, 46.0, theme::accent(),
-                                            0.0, |v| format!("{:02}", v as i32),
-                                        );
-                                        if m != self.wake_min
-                                            || res.committed.is_some()
-                                            || res.wheeled
-                                        {
-                                            self.wake_min = m.round();
-                                        }
-                                        Self::caption(ui, "MIN");
-                                    });
+                                    nixie::time(
+                                        ui,
+                                        "wake",
+                                        &mut self.wake_hour,
+                                        &mut self.wake_min,
+                                    );
                                     ui.add_space(10.0);
                                     ui.vertical(|ui| {
                                         let mut m = self.wake_rise_min;
@@ -1956,11 +1901,9 @@ impl eframe::App for VesperApp {
                 });
                 ui.add_space(8.0);
 
-                // ---- scrollable scenes + lights -----------------------------
+                // ---- scenes + lights ----------------------------------------
                 ui.set_opacity(self.intro_alpha(3));
-                egui::ScrollArea::vertical()
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
+                {
                         const GAP: f32 = 6.0;
 
                         // Scenes: a responsive grid whose tiles grow to fill the
@@ -2065,7 +2008,8 @@ impl eframe::App for VesperApp {
 
                         ui.add_space(10.0);
                         self.schedule_ui(ui, &mut acts);
-                    });
+                }
+                }); // scroll area
             });
 
         // The add-a-brand dialog sits above the app but below the splash.
@@ -2258,6 +2202,10 @@ fn main() -> eframe::Result<()> {
     }
     let options = eframe::NativeOptions {
         viewport,
+        // Don't restore the saved window geometry: if the window was last
+        // closed on a monitor that's since been unplugged (or moved partly
+        // off-screen), it comes back somewhere you can't reach it.
+        persist_window: false,
         ..Default::default()
     };
     eframe::run_native(
