@@ -12,13 +12,14 @@ use egui::{Align2, Color32, FontId, Pos2, Rect, Rounding, Sense, Stroke, Ui, Vec
 use crate::skin;
 use crate::theme;
 
-const TUBE_W: f32 = 54.0;
-const TUBE_H: f32 = 72.0;
+const TUBE_W: f32 = 50.0;
+const TUBE_H: f32 = 92.0;
+const DOME: f32 = 13.0; // height of the domed glass cap
+const BASE: f32 = 14.0; // height of the metal base
 const PX_PER_STEP: f32 = 14.0; // drag distance for one digit
-const DIGIT: f32 = 27.0;
+const DIGIT: f32 = 26.0;
 
 const GLASS_TOP: Color32 = Color32::from_rgb(0x14, 0x15, 0x1b);
-const GLASS_BOT: Color32 = Color32::from_rgb(0x07, 0x07, 0x0a);
 /// The neon-orange of a lit cathode, and the near-white core of the glyph
 /// itself - a real tube's filament reads brighter than its halo.
 const CATHODE: Color32 = Color32::from_rgb(0xff, 0x9a, 0x2e);
@@ -58,15 +59,56 @@ fn tube(ui: &mut Ui, id_src: &str, value: &mut f32, max: u32) -> bool {
     if ui.is_rect_visible(rect) {
         let painter = ui.painter();
         let v = value.round().rem_euclid(span) as u32;
-        let c = rect.center();
+        // The cathodes sit up in the glass, not level with the base.
+        let c = Pos2::new(rect.center().x, rect.min.y + (TUBE_H - BASE) * 0.52);
         let amber = |a: u8| {
             Color32::from_rgba_unmultiplied(CATHODE.r(), CATHODE.g(), CATHODE.b(), a)
         };
 
-        // Glass envelope, and the round face of the tube you're looking into.
-        painter.add(skin::vgrad(rect, GLASS_TOP, GLASS_BOT));
-        painter.rect_stroke(rect, Rounding::same(8.0), Stroke::new(1.0, theme::edge()));
-        painter.circle_filled(c, TUBE_W * 0.46, Color32::from_rgb(0x05, 0x05, 0x07));
+        // An upright glass cylinder seen from the side: domed cap on top,
+        // metal base at the bottom, and the body shaded dark-light-dark across
+        // its width so it reads as round rather than as a flat panel.
+        let body = Rect::from_min_max(
+            Pos2::new(rect.min.x, rect.min.y + DOME * 0.5),
+            Pos2::new(rect.max.x, rect.max.y - BASE),
+        );
+        let curve = [
+            Color32::from_rgb(0x04, 0x04, 0x06),
+            GLASS_TOP,
+            Color32::from_rgb(0x1c, 0x1e, 0x26),
+            GLASS_TOP,
+            Color32::from_rgb(0x03, 0x03, 0x05),
+        ];
+        // dome first, then the body over it, so they read as one envelope
+        let dome = Rect::from_min_max(
+            Pos2::new(rect.min.x + 2.0, rect.min.y),
+            Pos2::new(rect.max.x - 2.0, rect.min.y + DOME * 2.0),
+        );
+        painter.add(skin::hgrad_multi(dome, &curve));
+        painter.rect_filled(
+            Rect::from_min_max(dome.min, Pos2::new(dome.max.x, dome.center().y)),
+            Rounding {
+                nw: DOME,
+                ne: DOME,
+                sw: 0.0,
+                se: 0.0,
+            },
+            Color32::TRANSPARENT,
+        );
+        painter.add(skin::hgrad_multi(body, &curve));
+        // the darker interior the cathodes sit in
+        let cavity = body.shrink2(Vec2::new(5.0, 6.0));
+        painter.rect_filled(
+            cavity,
+            Rounding::same(6.0),
+            Color32::from_rgb(0x05, 0x05, 0x07),
+        );
+        // glass outline, and the seam where the envelope meets the base
+        painter.rect_stroke(
+            body,
+            Rounding::same(3.0),
+            Stroke::new(1.0, Color32::from_black_alpha(120)),
+        );
 
         // The unlit digits sit *behind* the lit one - a Nixie stacks its
         // cathodes front-to-back, so they recede in depth rather than sitting
@@ -106,28 +148,48 @@ fn tube(ui: &mut Ui, id_src: &str, value: &mut f32, max: u32) -> bool {
             FILAMENT,
         );
 
-        // The fine anode mesh that sits in front of the cathodes, and the
-        // curve of the glass catching light down the left.
-        let mut x = rect.min.x + 5.0;
-        while x < rect.max.x - 4.0 {
+        // The fine anode mesh in front of the cathodes.
+        let mut x = cavity.min.x + 4.0;
+        while x < cavity.max.x - 2.0 {
             painter.line_segment(
-                [Pos2::new(x, rect.min.y + 4.0), Pos2::new(x, rect.max.y - 8.0)],
-                Stroke::new(0.5, Color32::from_white_alpha(6)),
+                [Pos2::new(x, cavity.min.y + 2.0), Pos2::new(x, cavity.max.y - 2.0)],
+                Stroke::new(0.5, Color32::from_white_alpha(7)),
             );
             x += 5.0;
         }
-        painter.add(skin::vgrad(
-            Rect::from_min_max(rect.min, Pos2::new(rect.min.x + 7.0, rect.max.y)),
-            Color32::from_white_alpha(20),
-            Color32::from_white_alpha(0),
+
+        // Specular streak down the left of the glass - the single strongest
+        // cue that this is a cylinder standing up, not a flat plate.
+        painter.add(skin::hgrad_multi(
+            Rect::from_min_max(
+                Pos2::new(rect.min.x + 5.0, rect.min.y + DOME * 0.6),
+                Pos2::new(rect.min.x + 14.0, rect.max.y - BASE - 4.0),
+            ),
+            &[
+                Color32::from_white_alpha(0),
+                Color32::from_white_alpha(26),
+                Color32::from_white_alpha(0),
+            ],
         ));
 
-        // metal base
-        painter.rect_filled(
-            Rect::from_min_max(Pos2::new(rect.min.x, rect.max.y - 6.0), rect.max),
-            Rounding::same(3.0),
-            theme::steel_bot(),
+        // Metal base with its collar and pins.
+        let base = Rect::from_min_max(
+            Pos2::new(rect.min.x + 3.0, rect.max.y - BASE),
+            Pos2::new(rect.max.x - 3.0, rect.max.y - 3.0),
         );
+        painter.add(skin::vgrad(base, theme::steel_top(), theme::steel_bot()));
+        painter.rect_stroke(
+            base,
+            Rounding::same(2.0),
+            Stroke::new(1.0, Color32::from_black_alpha(150)),
+        );
+        for i in 0..3 {
+            let px = base.min.x + base.width() * (0.25 + 0.25 * i as f32);
+            painter.line_segment(
+                [Pos2::new(px, base.max.y), Pos2::new(px, rect.max.y)],
+                Stroke::new(1.5, theme::steel_bot()),
+            );
+        }
     }
     changed
 }

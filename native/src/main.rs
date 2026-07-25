@@ -108,6 +108,27 @@ enum Act {
 // Assets
 // --------------------------------------------------------------------------
 
+/// Read the loopback level once it has settled. The envelope has a slow
+/// release by design (so the lights ease down), which means a naive peak
+/// straight after a change is really the *previous* sound still decaying -
+/// hence the wait before sampling. Returns (mean, peak): steady layers are
+/// judged by the mean, sparse ones (birdsong, chimes) by the peak.
+#[allow(dead_code)]
+fn settled_level(lvl: &std::sync::atomic::AtomicU32, settle_ms: u64, watch_ms: u64) -> (u32, u32) {
+    use std::sync::atomic::Ordering;
+    std::thread::sleep(Duration::from_millis(settle_ms));
+    let (mut sum, mut n, mut peak) = (0u64, 0u64, 0u32);
+    let end = Instant::now() + Duration::from_millis(watch_ms);
+    while Instant::now() < end {
+        std::thread::sleep(Duration::from_millis(50));
+        let v = lvl.load(Ordering::Relaxed);
+        sum += v as u64;
+        peak = peak.max(v);
+        n += 1;
+    }
+    ((sum / n.max(1)) as u32, peak)
+}
+
 /// Seconds from now until the next occurrence of local clock time `h:m`
 /// (today if it's still ahead, otherwise tomorrow).
 fn secs_until_clock(h: u32, m: u32) -> i64 {
@@ -294,7 +315,11 @@ struct VesperApp {
     discovering: bool,
     sound_on: bool,
     master: f32,
+    /// Final output gain. The two bus levels below feed into it.
     volume: f32,
+    /// Per-scene ambience bus, and the noise bed bus.
+    scene_vol: f32,
+    noise_vol: f32,
     speed_ui: f32,
     driver: Driver,
     audio: Ambience,
@@ -399,6 +424,8 @@ impl VesperApp {
             sound_on: true,
             master: 100.0,
             volume: 60.0,
+            scene_vol: 100.0,
+            noise_vol: 100.0,
             speed_ui: 100.0,
             driver: Driver::new(music.level_handle(), music.tone_handle()),
             audio: Ambience::new(root.join("audio")),
@@ -472,6 +499,15 @@ impl VesperApp {
         );
         ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(pos));
         self.needs_placing = false;
+    }
+
+    /// Push the mixer down to the two audio engines: each bus is scaled by the
+    /// master, so Volume is a true final output and the bus dials set the
+    /// balance between the scene's soundscape and the noise bed.
+    fn apply_audio_gains(&mut self) {
+        let m = self.volume / 100.0;
+        self.audio.set_volume(self.scene_vol * m);
+        self.noise.set_master(self.noise_vol * m);
     }
 
     fn set_status(&mut self, text: impl Into<String>, err: bool) {
@@ -1656,19 +1692,97 @@ impl eframe::App for VesperApp {
                                 );
                                 Self::caption(ui, "BRIGHTNESS · ALL LIGHTS");
                             });
+                            // Audio mixer: the scene and noise buses feed the
+                            // master, and the connectors say so.
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                 ui.vertical(|ui| {
-                                    let mut v = self.volume;
-                                    let res = knob(
-                                        ui, &mut v, 0.0, 100.0, 58.0, theme::green(), 60.0,
-                                        |x| format!("{}", x as i32),
-                                    );
-                                    if v != self.volume || res.committed.is_some() {
-                                        self.volume = v;
-                                        self.audio.set_volume(v);
-                                        self.noise.set_master(v);
+                                    let mut changed = false;
+                                    let (mut scene_r, mut noise_r) =
+                                        (Rect::NOTHING, Rect::NOTHING);
+                                    ui.horizontal(|ui| {
+                                        ui.vertical(|ui| {
+                                            let mut v = self.scene_vol;
+                                            let r = knob(
+                                                ui, &mut v, 0.0, 100.0, 42.0,
+                                                theme::accent(), 100.0,
+                                                |x| format!("{}", x as i32),
+                                            );
+                                            if v != self.scene_vol || r.committed.is_some() {
+                                                self.scene_vol = v;
+                                                changed = true;
+                                            }
+                                            scene_r = r.rect;
+                                            Self::caption(ui, "SCENE");
+                                        });
+                                        ui.add_space(10.0);
+                                        ui.vertical(|ui| {
+                                            let mut v = self.noise_vol;
+                                            let r = knob(
+                                                ui, &mut v, 0.0, 100.0, 42.0,
+                                                theme::accent(), 100.0,
+                                                |x| format!("{}", x as i32),
+                                            );
+                                            if v != self.noise_vol || r.committed.is_some() {
+                                                self.noise_vol = v;
+                                                changed = true;
+                                            }
+                                            noise_r = r.rect;
+                                            Self::caption(ui, "NOISE");
+                                        });
+                                    });
+                                    ui.add_space(11.0); // room for the connectors
+                                    let mid = (scene_r.center().x + noise_r.center().x) * 0.5;
+                                    let mut master_r = Rect::NOTHING;
+                                    ui.horizontal(|ui| {
+                                        let x0 = ui.cursor().left();
+                                        ui.add_space((mid - x0 - 29.0).max(0.0));
+                                        ui.vertical(|ui| {
+                                            let mut v = self.volume;
+                                            let r = knob(
+                                                ui, &mut v, 0.0, 100.0, 58.0,
+                                                theme::green(), 60.0,
+                                                |x| format!("{}", x as i32),
+                                            );
+                                            if v != self.volume || r.committed.is_some() {
+                                                self.volume = v;
+                                                changed = true;
+                                            }
+                                            master_r = r.rect;
+                                            Self::caption(ui, "VOLUME");
+                                        });
+                                    });
+                                    if changed {
+                                        self.apply_audio_gains();
                                     }
-                                    Self::caption(ui, "VOLUME");
+                                    // signal flow: both buses down into master
+                                    if master_r != Rect::NOTHING {
+                                        let st = Stroke::new(1.5, theme::edge());
+                                        let bus_y = scene_r.bottom() + 16.0;
+                                        let p = ui.painter();
+                                        for r in [scene_r, noise_r] {
+                                            p.line_segment(
+                                                [
+                                                    Pos2::new(r.center().x, r.bottom() + 11.0),
+                                                    Pos2::new(r.center().x, bus_y),
+                                                ],
+                                                st,
+                                            );
+                                        }
+                                        p.line_segment(
+                                            [
+                                                Pos2::new(scene_r.center().x, bus_y),
+                                                Pos2::new(noise_r.center().x, bus_y),
+                                            ],
+                                            st,
+                                        );
+                                        p.line_segment(
+                                            [
+                                                Pos2::new(mid, bus_y),
+                                                Pos2::new(master_r.center().x, master_r.top()),
+                                            ],
+                                            st,
+                                        );
+                                    }
                                 });
                             });
                         });
@@ -2273,6 +2387,35 @@ fn main() -> eframe::Result<()> {
         }
         n.stop();
         let path = args.get(2).cloned().unwrap_or_else(|| "scenecheck.txt".into());
+        let _ = std::fs::write(path, report);
+        return Ok(());
+    }
+
+    // Headless check of the audio mixer: does the noise bus dial attenuate
+    // independently of the master? `vesper.exe --mixcheck [out.txt]`.
+    if args.get(1).map(String::as_str) == Some("--mixcheck") {
+        let mut m = music::Music::new();
+        let started = m.start();
+        let lvl = m.level_handle();
+        let mut n = noise::Noise::new(root.join("audio"));
+        // Steady tone, kept low enough that the meter doesn't saturate - at
+        // full level both 50% and 100% pin it and the test proves nothing.
+        n.set_level(noise::NoiseKind::Pink, 30.0);
+        // Baseline first: the loopback hears *everything* the PC plays, so
+        // without this a reading can't be attributed to us.
+        let (base, _) = settled_level(&lvl, 1600, 1200);
+        let mut report = format!(
+            "loopback started: {started}\nbaseline (nothing from us): {base}\n"
+        );
+        for (bus, master) in [(100.0, 100.0), (50.0, 100.0), (100.0, 50.0), (0.0, 100.0)] {
+            n.set_master(bus * master / 100.0);
+            let (mean, _peak) = settled_level(&lvl, 1600, 1200);
+            report.push_str(&format!(
+                "  bus {bus:>5.0}  master {master:>5.0}  ->  level {mean}\n"
+            ));
+        }
+        n.stop();
+        let path = args.get(2).cloned().unwrap_or_else(|| "mixcheck.txt".into());
         let _ = std::fs::write(path, report);
         return Ok(());
     }

@@ -58,6 +58,7 @@ impl Music {
         let cfg: cpal::StreamConfig = supported.into();
         let level = self.level.clone();
         let tone = self.tone.clone();
+        let rate = cfg.sample_rate.0 as f32 * cfg.channels as f32;
 
         // Fast attack, slow release so the lights punch on transients but ease
         // back down smoothly. Alongside the loudness we track a crude spectral
@@ -83,8 +84,14 @@ impl Music {
             }
             let n = buf.len() as f32;
             let rms = (sum / n).sqrt();
-            let target = (rms * 3.5).min(1.0);
-            let a = if target > env { 0.5 } else { 0.04 };
+            let target = (rms * 2.6).min(1.0);
+            // Smooth in *seconds*, not per callback: cpal hands out buffers of
+            // wildly different sizes (here ~100ms), so a fixed per-buffer
+            // coefficient made the release ten times slower than intended and
+            // the lights lag the music badly.
+            let dt = (n / rate).clamp(0.001, 0.5);
+            let coeff = |tau: f32| 1.0 - (-dt / tau).exp();
+            let a = if target > env { coeff(0.02) } else { coeff(0.25) };
             env += (target - env) * a;
             level.store((env * 1000.0) as u32, Ordering::Relaxed);
 
@@ -94,7 +101,7 @@ impl Music {
                 let t = (high / (low + high + 1e-9)).clamp(0.0, 1.0);
                 // treble is weaker by nature; stretch it around the midpoint
                 let t = ((t - 0.15) * 2.2 + 0.5).clamp(0.0, 1.0);
-                tone_env += (t - tone_env) * 0.08;
+                tone_env += (t - tone_env) * coeff(0.45);
                 tone.store((tone_env * 1000.0) as u32, Ordering::Relaxed);
             }
         };

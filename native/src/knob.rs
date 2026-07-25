@@ -15,6 +15,8 @@ pub struct KnobResult {
     pub committed: Option<f32>,
     /// Value nudged by the scroll wheel this frame (caller debounces).
     pub wheeled: bool,
+    /// Where it landed, for callers that draw connections between knobs.
+    pub rect: egui::Rect,
 }
 
 fn arc_points(c: Pos2, r: f32, start_deg: f32, sweep_deg: f32) -> Vec<Pos2> {
@@ -119,7 +121,7 @@ pub fn knob(
         );
     }
 
-    KnobResult { committed, wheeled }
+    KnobResult { committed, wheeled, rect }
 }
 
 /// iOS-style sliding on/off switch. Returns true when the user toggled it.
