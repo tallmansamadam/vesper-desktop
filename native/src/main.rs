@@ -65,10 +65,6 @@ enum Msg {
     PlayAmbience(&'static str),
     Rediscover,
     SunriseDone,
-    SysShow,
-    SysPower(bool),
-    SysToggle,
-    SysQuit,
 }
 
 /// Deferred user intents collected during the UI pass (avoids borrow
@@ -297,7 +293,12 @@ struct VesperApp {
     sched_days: [bool; 7],
     sched_scene: String,
     _system: system::System,
-    really_quit: bool,
+    /// Set by the tray's Quit; shared so the tray thread can set it without
+    /// waiting for a UI frame.
+    really_quit: Arc<AtomicBool>,
+    /// The discovered lights, shared with the tray thread so its actions work
+    /// while the window is hidden.
+    shared_lights: Arc<std::sync::Mutex<Vec<Arc<Light>>>>,
     splash: splash::Splash,
     /// Per-light UI mirrors: id -> (brightness knob, white knob).
     knobs: HashMap<String, (f32, f32)>,
@@ -324,7 +325,18 @@ impl VesperApp {
         let (tx, rx) = channel();
         let ctrl = Arc::new(Controller::new(&root));
         spawn_texture_loader(root.clone(), cc.egui_ctx.clone(), tx.clone());
-        let sys = system::init(&root, tx.clone(), cc.egui_ctx.clone());
+        let shared_lights = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let really_quit = Arc::new(AtomicBool::new(false));
+        let sys = system::init(
+            &root,
+            tx.clone(),
+            cc.egui_ctx.clone(),
+            system::Shared {
+                ctrl: ctrl.clone(),
+                lights: shared_lights.clone(),
+                quit: really_quit.clone(),
+            },
+        );
         let music = music::Music::new();
 
         let mut app = VesperApp {
@@ -365,7 +377,8 @@ impl VesperApp {
             sched_days: [true; 7],
             sched_scene: "Relax".to_string(),
             _system: sys,
-            really_quit: false,
+            really_quit,
+            shared_lights,
             splash: splash::Splash::new(),
             knobs: HashMap::new(),
             toggles: HashMap::new(),
@@ -774,6 +787,9 @@ impl VesperApp {
                 Msg::Discovered(lights) => {
                     self.discovering = false;
                     self.lights = lights;
+                    if let Ok(mut shared) = self.shared_lights.lock() {
+                        shared.clone_from(&self.lights);
+                    }
                     self.sync_from_lights();
                     if self.lights.is_empty() {
                         self.set_status("No lights found.", true);
@@ -799,20 +815,6 @@ impl VesperApp {
                 Msg::PlayAmbience(key) => self.audio.play(key),
                 Msg::Rediscover => self.spawn_discover(ctx),
                 Msg::SunriseDone => self.sunrise_stop = None,
-                Msg::SysShow => {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-                }
-                Msg::SysPower(on) => self.act(ctx, Act::AllPower(on)),
-                Msg::SysToggle => {
-                    let all_on = !self.lights.is_empty()
-                        && self.lights.iter().all(|l| l.power());
-                    self.act(ctx, Act::AllPower(!all_on));
-                }
-                Msg::SysQuit => {
-                    self.really_quit = true;
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                }
             }
         }
     }
@@ -1198,7 +1200,9 @@ impl eframe::App for VesperApp {
 
         // Close button minimises to the tray instead of quitting (unless the
         // tray's Quit was chosen, which sets really_quit).
-        if ctx.input(|i| i.viewport().close_requested()) && !self.really_quit {
+        if ctx.input(|i| i.viewport().close_requested())
+            && !self.really_quit.load(Ordering::Relaxed)
+        {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
             self.set_status("Minimised to tray — right-click the tray icon for options.", false);
