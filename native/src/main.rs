@@ -1148,6 +1148,84 @@ impl VesperApp {
         ui.label(RichText::new(text).size(10.0).color(theme::caption()));
     }
 
+    /// A small group label with a hairline running out to the right: enough to
+    /// separate a cluster of controls without the weight of another panel.
+    fn group_header(ui: &mut egui::Ui, label: &str) {
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new(label)
+                    .size(10.0)
+                    .strong()
+                    .color(theme::caption()),
+            );
+            let r = ui.available_rect_before_wrap();
+            if r.width() > 10.0 {
+                ui.painter().line_segment(
+                    [
+                        Pos2::new(r.left() + 4.0, r.center().y),
+                        Pos2::new(r.right(), r.center().y),
+                    ],
+                    Stroke::new(1.0, theme::edge().gamma_multiply(0.55)),
+                );
+            }
+        });
+        ui.add_space(4.0);
+    }
+
+    /// The header bar of a collapsible section: a disclosure triangle, a
+    /// title, and a rule. Reads as part of the panel rather than a stray
+    /// button, which is what the old pill looked like.
+    fn section_bar(ui: &mut egui::Ui, label: &str, open: bool, active: bool) -> bool {
+        let (rect, resp) =
+            ui.allocate_exact_size(Vec2::new(ui.available_width(), 24.0), Sense::click());
+        if ui.is_rect_visible(rect) {
+            let p = ui.painter();
+            if open || resp.hovered() {
+                p.rect_filled(
+                    rect,
+                    Rounding::same(4.0),
+                    theme::panel().gamma_multiply(if open { 0.85 } else { 0.5 }),
+                );
+            }
+            let col = if active { theme::accent() } else { theme::caption() };
+            // disclosure triangle, drawn rather than typed so it can't depend
+            // on the font having the glyph
+            let c = Pos2::new(rect.min.x + 12.0, rect.center().y);
+            let tri = if open {
+                vec![
+                    Pos2::new(c.x - 4.5, c.y - 2.5),
+                    Pos2::new(c.x + 4.5, c.y - 2.5),
+                    Pos2::new(c.x, c.y + 3.5),
+                ]
+            } else {
+                vec![
+                    Pos2::new(c.x - 2.5, c.y - 4.5),
+                    Pos2::new(c.x - 2.5, c.y + 4.5),
+                    Pos2::new(c.x + 3.5, c.y),
+                ]
+            };
+            p.add(egui::Shape::convex_polygon(tri, col, Stroke::NONE));
+            let text_end = p.text(
+                Pos2::new(rect.min.x + 24.0, rect.center().y),
+                Align2::LEFT_CENTER,
+                label,
+                FontId::proportional(11.5),
+                col,
+            );
+            let x0 = text_end.right() + 8.0;
+            if x0 < rect.right() - 6.0 {
+                p.line_segment(
+                    [
+                        Pos2::new(x0, rect.center().y),
+                        Pos2::new(rect.right() - 6.0, rect.center().y),
+                    ],
+                    Stroke::new(1.0, theme::edge().gamma_multiply(0.45)),
+                );
+            }
+        }
+        resp.clicked()
+    }
+
     fn scene_tile(&self, ui: &mut egui::Ui, sc: &Scene, size: Vec2) -> egui::Response {
         let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
         if ui.is_rect_visible(rect) {
@@ -1669,32 +1747,44 @@ impl eframe::App for VesperApp {
                     .inner_margin(egui::Margin::symmetric(16.0, 12.0))
                     .show(ui, |ui| {
                         ui.set_width(ui.available_width());
-                        ui.horizontal(|ui| {
-                            let mut m = self.master;
-                            let res = knob(
-                                ui, &mut m, 0.0, 100.0, 74.0, theme::accent(), 100.0,
-                                |v| format!("{}%", v as i32),
-                            );
-                            self.master = m;
-                            if let Some(v) = res.committed {
-                                acts.push(Act::Master(v));
-                            } else if res.wheeled {
-                                self.pending.insert(
-                                    "master".into(),
-                                    (Instant::now(), Act::Master(m)),
+                        // Light on the left, sound on the right, split down the
+                        // middle - they're unrelated controls and were sharing
+                        // a row with nothing but a gap between them.
+                        let top = ui.scope(|ui| {
+                        ui.columns(2, |cols| {
+                            let ui = &mut cols[0];
+                            Self::group_header(ui, "LIGHT");
+                            ui.horizontal(|ui| {
+                                let mut m = self.master;
+                                let res = knob(
+                                    ui, &mut m, 0.0, 100.0, 68.0, theme::accent(), 100.0,
+                                    |v| format!("{}%", v as i32),
                                 );
-                            }
-                            ui.add_space(12.0);
-                            ui.vertical(|ui| {
-                                ui.label(
-                                    RichText::new("MASTER").size(13.0).strong()
-                                        .color(theme::text()),
-                                );
-                                Self::caption(ui, "BRIGHTNESS · ALL LIGHTS");
+                                self.master = m;
+                                if let Some(v) = res.committed {
+                                    acts.push(Act::Master(v));
+                                } else if res.wheeled {
+                                    self.pending.insert(
+                                        "master".into(),
+                                        (Instant::now(), Act::Master(m)),
+                                    );
+                                }
+                                ui.add_space(10.0);
+                                ui.vertical(|ui| {
+                                    ui.add_space(10.0);
+                                    ui.label(
+                                        RichText::new("MASTER").size(13.0).strong()
+                                            .color(theme::text()),
+                                    );
+                                    Self::caption(ui, "ALL LIGHTS");
+                                });
                             });
-                            // Audio mixer: the scene and noise buses feed the
-                            // master, and the connectors say so.
-                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+
+                            let ui = &mut cols[1];
+                            Self::group_header(ui, "SOUND");
+                            // The scene and noise buses feed the master, and
+                            // the connectors say so.
+                            ui.horizontal(|ui| {
                                 ui.vertical(|ui| {
                                     let mut changed = false;
                                     let (mut scene_r, mut noise_r) =
@@ -1786,20 +1876,28 @@ impl eframe::App for VesperApp {
                                 });
                             });
                         });
+                        });
+                        // hairline between the light and sound halves
+                        let tr = top.response.rect;
+                        ui.painter().line_segment(
+                            [
+                                Pos2::new(tr.center().x, tr.top() + 2.0),
+                                Pos2::new(tr.center().x, tr.bottom() - 2.0),
+                            ],
+                            Stroke::new(1.0, theme::edge().gamma_multiply(0.5)),
+                        );
 
                         // ---- noise generator (collapsible) ------------------
                         // Layered noise colours, mixable, tucked into the same
                         // bar as the master dials. Header toggles the section.
-                        ui.add_space(8.0);
-                        let arrow = if self.noise_open { "-" } else { "+" };
-                        if self
-                            .pill(ui, &format!("{arrow}  Noise"), self.noise.active())
-                            .clicked()
+                        ui.add_space(10.0);
+                        if Self::section_bar(ui, "NOISE", self.noise_open, self.noise.active())
                         {
                             self.noise_open = !self.noise_open;
                         }
                         if self.noise_open {
                             ui.add_space(6.0);
+                            Self::group_header(ui, "PLACES");
                             // Places, as mixes of the layers below - the noise
                             // panel's answer to the light scenes.
                             ui.horizontal_wrapped(|ui| {
@@ -1818,7 +1916,8 @@ impl eframe::App for VesperApp {
                                     self.noise_scene = None;
                                 }
                             });
-                            ui.add_space(8.0);
+                            ui.add_space(10.0);
+                            Self::group_header(ui, "LAYERS");
                             // Grid the noise dials so every one stays visible,
                             // stacking into fewer columns as the width shrinks.
                             let avail = ui.available_width();
@@ -1856,18 +1955,23 @@ impl eframe::App for VesperApp {
                         }
 
                         // ---- sleep timer (collapsible) ----------------------
-                        ui.add_space(8.0);
-                        let t_arrow = if self.timer_open { "-" } else { "+" };
-                        if self
-                            .pill(ui, &format!("{t_arrow}  Timer"), self.timer_end.is_some())
-                            .clicked()
-                        {
+                        ui.add_space(10.0);
+                        if Self::section_bar(
+                            ui,
+                            "TIMERS",
+                            self.timer_open,
+                            self.timer_end.is_some() || self.wake_end.is_some(),
+                        ) {
                             self.timer_open = !self.timer_open;
                         }
                         if self.timer_open {
                             ui.add_space(6.0);
-                            Self::caption(ui, "SLEEP · FADE OFF AT");
-                            ui.add_space(4.0);
+                            // Sleep and wake side by side: they're a pair, and
+                            // stacking them made the panel a long ribbon.
+                            let timers = ui.scope(|ui| {
+                            ui.columns(2, |tcols| {
+                            let ui = &mut tcols[0];
+                            Self::group_header(ui, "SLEEP · OFF AT");
                             ui.horizontal(|ui| {
                                 if let Some(end) = self.timer_end {
                                     ui.label(
@@ -1913,9 +2017,8 @@ impl eframe::App for VesperApp {
                             });
 
                             // wake / sunrise alarm
-                            ui.add_space(8.0);
-                            Self::caption(ui, "WAKE · SUNRISE AT");
-                            ui.add_space(4.0);
+                            let ui = &mut tcols[1];
+                            Self::group_header(ui, "WAKE · SUNRISE AT");
                             ui.horizontal(|ui| {
                                 if self.sunrise_stop.is_some() {
                                     ui.label(
@@ -1995,6 +2098,17 @@ impl eframe::App for VesperApp {
                                     }
                                 }
                             });
+                            });
+                            });
+                            // hairline between the two timers
+                            let r = timers.response.rect;
+                            ui.painter().line_segment(
+                                [
+                                    Pos2::new(r.center().x, r.top() + 2.0),
+                                    Pos2::new(r.center().x, r.bottom() - 2.0),
+                                ],
+                                Stroke::new(1.0, theme::edge().gamma_multiply(0.5)),
+                            );
                         }
                     });
                 ui.painter().set(
