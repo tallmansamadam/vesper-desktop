@@ -237,6 +237,23 @@ fn load_fonts(ctx: &egui::Context) {
     ctx.set_fonts(fonts);
 }
 
+/// Push the active theme into egui's own visuals (window fill, default text),
+/// so the parts egui draws for us match the parts we paint ourselves.
+fn apply_visuals(ctx: &egui::Context) {
+    let mut visuals = if theme::is_light() {
+        egui::Visuals::light()
+    } else {
+        egui::Visuals::dark()
+    };
+    visuals.panel_fill = theme::bg();
+    visuals.override_text_color = Some(theme::text());
+    visuals.widgets.inactive.bg_fill = theme::panel();
+    visuals.widgets.hovered.bg_fill = theme::btn_top_hover();
+    visuals.widgets.active.bg_fill = theme::accent_dk();
+    visuals.selection.bg_fill = theme::accent_dk();
+    ctx.set_visuals(visuals);
+}
+
 fn load_icon(root: &Path) -> Option<egui::IconData> {
     let img = image::open(root.join("branding").join("vesper_icon_256.png")).ok()?;
     let rgba = img.to_rgba8();
@@ -300,6 +317,8 @@ struct VesperApp {
     /// while the window is hidden.
     shared_lights: Arc<std::sync::Mutex<Vec<Arc<Light>>>>,
     splash: splash::Splash,
+    theme_idx: usize,
+    settings_path: PathBuf,
     /// When the UI began assembling itself under the fading splash.
     intro_start: Option<Instant>,
     /// A brief tint in a scene's own colour, as feedback that it was applied.
@@ -315,10 +334,14 @@ struct VesperApp {
 impl VesperApp {
     fn new(cc: &eframe::CreationContext<'_>, root: PathBuf) -> VesperApp {
         load_fonts(&cc.egui_ctx);
-        let mut visuals = egui::Visuals::dark();
-        visuals.panel_fill = theme::BG;
-        visuals.override_text_color = Some(theme::TEXT);
-        cc.egui_ctx.set_visuals(visuals);
+        let settings_path = root.join("settings.json");
+        let theme_idx = std::fs::read_to_string(&settings_path)
+            .ok()
+            .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+            .and_then(|v| v.get("theme").and_then(serde_json::Value::as_u64))
+            .unwrap_or(0) as usize;
+        theme::set(theme_idx);
+        apply_visuals(&cc.egui_ctx);
         // Float the scrollbar over the content instead of insetting the right
         // edge, so the scrolled area keeps the same left/right margins as the
         // fixed panels above it.
@@ -384,6 +407,8 @@ impl VesperApp {
             really_quit,
             shared_lights,
             splash: splash::Splash::new(),
+            theme_idx: theme::index(),
+            settings_path,
             intro_start: None,
             scene_flash: None,
             knobs: HashMap::new(),
@@ -851,19 +876,19 @@ impl VesperApp {
     fn pill(&self, ui: &mut egui::Ui, label: &str, active: bool) -> egui::Response {
         let font = FontId::proportional(10.0);
         let text_w = ui
-            .fonts(|f| f.layout_no_wrap(label.to_owned(), font.clone(), theme::TEXT).size().x);
+            .fonts(|f| f.layout_no_wrap(label.to_owned(), font.clone(), theme::text()).size().x);
         let (rect, resp) =
             ui.allocate_exact_size(Vec2::new(text_w + 20.0, 22.0), Sense::click());
         if ui.is_rect_visible(rect) {
             let (top, bottom, fg, gloss, glow) = if active {
-                (theme::ACCENT_HI, theme::ACCENT_DK, Color32::WHITE, 78,
-                 Some(theme::ACCENT.gamma_multiply(0.6)))
+                (theme::accent_hi(), theme::accent_dk(), Color32::WHITE, 78,
+                 Some(theme::accent().gamma_multiply(0.6)))
             } else if resp.hovered() {
-                (theme::BTN_TOP_HOVER, theme::BTN_BOT_HOVER, theme::TEXT, 46, None)
+                (theme::btn_top_hover(), theme::btn_bot_hover(), theme::text(), 46, None)
             } else {
-                (theme::BTN_TOP, theme::BTN_BOT, theme::TEXT, 30, None)
+                (theme::btn_top(), theme::btn_bot(), theme::text(), 30, None)
             };
-            skin::button(ui.painter(), rect, top, bottom, theme::EDGE, gloss, glow);
+            skin::button(ui.painter(), rect, top, bottom, theme::edge(), gloss, glow);
             ui.painter()
                 .text(rect.center(), Align2::CENTER_CENTER, label, font, fg);
         }
@@ -883,7 +908,7 @@ impl VesperApp {
     }
 
     fn caption(ui: &mut egui::Ui, text: &str) {
-        ui.label(RichText::new(text).size(8.0).color(theme::MUTED));
+        ui.label(RichText::new(text).size(8.0).color(theme::muted()));
     }
 
     fn scene_tile(&self, ui: &mut egui::Ui, sc: &Scene, size: Vec2) -> egui::Response {
@@ -900,7 +925,7 @@ impl VesperApp {
                     );
                 }
                 None => {
-                    painter.rect_filled(rect, Rounding::ZERO, theme::PANEL);
+                    painter.rect_filled(rect, Rounding::ZERO, theme::panel());
                 }
             }
             // name with shadow
@@ -928,9 +953,9 @@ impl VesperApp {
             if hover > 0.01 {
                 let mix = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * hover) as u8;
                 let c = Color32::from_rgb(
-                    mix(theme::STROKE.r(), 255),
-                    mix(theme::STROKE.g(), 255),
-                    mix(theme::STROKE.b(), 255),
+                    mix(theme::stroke().r(), 255),
+                    mix(theme::stroke().g(), 255),
+                    mix(theme::stroke().b(), 255),
                 );
                 painter.rect_stroke(rect.shrink(1.0), Rounding::ZERO, Stroke::new(2.0, c));
             }
@@ -977,7 +1002,7 @@ impl VesperApp {
                 Align2::CENTER_CENTER,
                 "✕",
                 FontId::proportional(12.0),
-                if x_hover { theme::ERR } else { Color32::from_white_alpha(150) },
+                if x_hover { theme::err() } else { Color32::from_white_alpha(150) },
             );
             if resp.clicked() && x_hover {
                 delete = true;
@@ -985,7 +1010,7 @@ impl VesperApp {
             painter.rect_stroke(
                 rect,
                 Rounding::ZERO,
-                Stroke::new(1.0, if resp.hovered() { theme::EDGE } else { theme::STROKE }),
+                Stroke::new(1.0, if resp.hovered() { theme::edge() } else { theme::stroke() }),
             );
         }
         (resp, delete)
@@ -1017,16 +1042,16 @@ impl VesperApp {
                     ui.painter().rect_stroke(
                         srect,
                         Rounding::same(9.0),
-                        Stroke::new(1.0, theme::STROKE),
+                        Stroke::new(1.0, theme::stroke()),
                     );
                     ui.vertical(|ui| {
                         ui.label(
-                            RichText::new(l.label()).size(13.0).strong().color(theme::TEXT),
+                            RichText::new(l.label()).size(13.0).strong().color(theme::text()),
                         );
                         ui.label(
                             RichText::new(format!("{} · {}", l.vendor.name(), l.ip))
                                 .size(8.0)
-                                .color(theme::MUTED),
+                                .color(theme::muted()),
                         );
                     });
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -1048,7 +1073,7 @@ impl VesperApp {
                 ui.horizontal(|ui| {
                     ui.vertical(|ui| {
                         let res = knob(
-                            ui, &mut bri, 0.0, 100.0, 66.0, theme::ACCENT, 100.0,
+                            ui, &mut bri, 0.0, 100.0, 66.0, theme::accent(), 100.0,
                             |v| format!("{}%", v as i32),
                         );
                         if let Some(v) = res.committed {
@@ -1064,7 +1089,7 @@ impl VesperApp {
                     ui.add_space(16.0);
                     ui.vertical(|ui| {
                         let res = knob(
-                            ui, &mut white, 2500.0, 9000.0, 66.0, theme::WARM, 3500.0,
+                            ui, &mut white, 2500.0, 9000.0, 66.0, theme::warm(), 3500.0,
                             |v| format!("{}K", v as i32),
                         );
                         if let Some(v) = res.committed {
@@ -1105,7 +1130,7 @@ impl VesperApp {
             });
         ui.painter().set(
             card_bg,
-            skin::panel(card.response.rect, theme::PANEL_TOP, theme::PANEL_BOT, theme::EDGE),
+            skin::panel(card.response.rect, theme::panel_top(), theme::panel_bot(), theme::edge()),
         );
     }
 
@@ -1139,9 +1164,9 @@ impl VesperApp {
                     RichText::new(format!("{}   {}", s.time_str(), s.scene))
                         .size(12.0)
                         .monospace()
-                        .color(theme::TEXT),
+                        .color(theme::text()),
                 );
-                ui.label(RichText::new(s.days_label()).size(10.0).color(theme::MUTED));
+                ui.label(RichText::new(s.days_label()).size(10.0).color(theme::muted()));
                 if self.pill(ui, "✕", false).clicked() {
                     del = Some(i);
                 }
@@ -1156,7 +1181,7 @@ impl VesperApp {
         ui.horizontal(|ui| {
             ui.vertical(|ui| {
                 let mut h = self.sched_hour;
-                let res = knob(ui, &mut h, 0.0, 23.0, 46.0, theme::ACCENT, 7.0,
+                let res = knob(ui, &mut h, 0.0, 23.0, 46.0, theme::accent(), 7.0,
                     |v| format!("{:02}", v as i32));
                 if h != self.sched_hour || res.committed.is_some() || res.wheeled {
                     self.sched_hour = h.round();
@@ -1166,7 +1191,7 @@ impl VesperApp {
             ui.add_space(8.0);
             ui.vertical(|ui| {
                 let mut m = self.sched_min;
-                let res = knob(ui, &mut m, 0.0, 59.0, 46.0, theme::ACCENT, 0.0,
+                let res = knob(ui, &mut m, 0.0, 59.0, 46.0, theme::accent(), 0.0,
                     |v| format!("{:02}", v as i32));
                 if m != self.sched_min || res.committed.is_some() || res.wheeled {
                     self.sched_min = m.round();
@@ -1207,7 +1232,7 @@ impl VesperApp {
                  while you're signed in.",
             )
             .size(8.0)
-            .color(theme::MUTED),
+            .color(theme::muted()),
         );
     }
 }
@@ -1286,14 +1311,14 @@ impl eframe::App for VesperApp {
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::none()
-                    .fill(theme::BG_BOT)
+                    .fill(theme::bg_bot())
                     .inner_margin(egui::Margin::symmetric(14.0, 12.0)),
             )
             .show(ctx, |ui| {
                 // window backdrop: a graphite top-to-bottom gradient behind
                 // everything (painted first, so all content lands on top).
                 ui.painter()
-                    .add(skin::vgrad(ui.clip_rect(), theme::BG_TOP, theme::BG_BOT));
+                    .add(skin::vgrad(ui.clip_rect(), theme::bg_top(), theme::bg_bot()));
 
                 // Scene feedback: the room's new colour washes down the top of
                 // the window and fades - a nod that the scene landed, not a
@@ -1329,8 +1354,8 @@ impl eframe::App for VesperApp {
                 ui.horizontal(|ui| {
                     ui.scope(|ui| {
                         ui.spacing_mut().item_spacing.x = 0.0;
-                        ui.label(RichText::new("Ves").size(18.0).strong().color(theme::TEXT));
-                        ui.label(RichText::new("per").size(18.0).strong().color(theme::ACCENT));
+                        ui.label(RichText::new("Ves").size(18.0).strong().color(theme::text()));
+                        ui.label(RichText::new("per").size(18.0).strong().color(theme::accent()));
                     });
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         let label = if self.discovering { "Discovering…" } else { "Discover" };
@@ -1353,13 +1378,31 @@ impl eframe::App for VesperApp {
                         if self.pill(ui, "+ Nanoleaf", false).clicked() {
                             acts.push(Act::PairNano);
                         }
+                        // theme picker
+                        let before = self.theme_idx;
+                        egui::ComboBox::from_id_salt("theme_pick")
+                            .selected_text(theme::current().name)
+                            .width(120.0)
+                            .show_ui(ui, |ui| {
+                                for (i, t) in theme::THEMES.iter().enumerate() {
+                                    ui.selectable_value(&mut self.theme_idx, i, t.name);
+                                }
+                            });
+                        if self.theme_idx != before {
+                            theme::set(self.theme_idx);
+                            apply_visuals(ui.ctx());
+                            let _ = std::fs::write(
+                                &self.settings_path,
+                                format!("{{\n  \"theme\": {}\n}}\n", self.theme_idx),
+                            );
+                        }
                     });
                 });
                 ui.add_space(2.0);
                 ui.label(
                     RichText::new(&self.status)
                         .size(10.0)
-                        .color(if self.status_err { theme::ERR } else { theme::MUTED }),
+                        .color(if self.status_err { theme::err() } else { theme::muted() }),
                 );
                 ui.add_space(6.0);
 
@@ -1373,7 +1416,7 @@ impl eframe::App for VesperApp {
                         ui.horizontal(|ui| {
                             let mut m = self.master;
                             let res = knob(
-                                ui, &mut m, 0.0, 100.0, 74.0, theme::ACCENT, 100.0,
+                                ui, &mut m, 0.0, 100.0, 74.0, theme::accent(), 100.0,
                                 |v| format!("{}%", v as i32),
                             );
                             self.master = m;
@@ -1389,7 +1432,7 @@ impl eframe::App for VesperApp {
                             ui.vertical(|ui| {
                                 ui.label(
                                     RichText::new("MASTER").size(13.0).strong()
-                                        .color(theme::TEXT),
+                                        .color(theme::text()),
                                 );
                                 Self::caption(ui, "BRIGHTNESS · ALL LIGHTS");
                             });
@@ -1397,7 +1440,7 @@ impl eframe::App for VesperApp {
                                 ui.vertical(|ui| {
                                     let mut v = self.volume;
                                     let res = knob(
-                                        ui, &mut v, 0.0, 100.0, 58.0, theme::GREEN, 60.0,
+                                        ui, &mut v, 0.0, 100.0, 58.0, theme::green(), 60.0,
                                         |x| format!("{}", x as i32),
                                     );
                                     if v != self.volume || res.committed.is_some() {
@@ -1436,7 +1479,7 @@ impl eframe::App for VesperApp {
                                             let mut v = self.noise.level_pct(k);
                                             let before = v;
                                             let res = knob(
-                                                ui, &mut v, 0.0, 100.0, 46.0, theme::GREEN,
+                                                ui, &mut v, 0.0, 100.0, 46.0, theme::green(),
                                                 0.0, |x| format!("{}", x as i32),
                                             );
                                             if v != before
@@ -1477,7 +1520,7 @@ impl eframe::App for VesperApp {
                                         ))
                                         .size(14.0)
                                         .monospace()
-                                        .color(theme::TEXT),
+                                        .color(theme::text()),
                                     );
                                     ui.add_space(12.0);
                                     if self.pill(ui, "Cancel", false).clicked() {
@@ -1488,7 +1531,7 @@ impl eframe::App for VesperApp {
                                     ui.vertical(|ui| {
                                         let mut h = self.timer_hour;
                                         let res = knob(
-                                            ui, &mut h, 0.0, 23.0, 46.0, theme::ACCENT,
+                                            ui, &mut h, 0.0, 23.0, 46.0, theme::accent(),
                                             23.0, |v| format!("{:02}", v as i32),
                                         );
                                         if h != self.timer_hour
@@ -1503,7 +1546,7 @@ impl eframe::App for VesperApp {
                                     ui.vertical(|ui| {
                                         let mut m = self.timer_min;
                                         let res = knob(
-                                            ui, &mut m, 0.0, 59.0, 46.0, theme::ACCENT,
+                                            ui, &mut m, 0.0, 59.0, 46.0, theme::accent(),
                                             0.0, |v| format!("{:02}", v as i32),
                                         );
                                         if m != self.timer_min
@@ -1542,7 +1585,7 @@ impl eframe::App for VesperApp {
                                     ui.label(
                                         RichText::new("Sunrise running")
                                             .size(13.0)
-                                            .color(theme::WARM),
+                                            .color(theme::warm()),
                                     );
                                     ui.add_space(12.0);
                                     if self.pill(ui, "Stop", false).clicked() {
@@ -1561,7 +1604,7 @@ impl eframe::App for VesperApp {
                                         ))
                                         .size(14.0)
                                         .monospace()
-                                        .color(theme::TEXT),
+                                        .color(theme::text()),
                                     );
                                     ui.add_space(12.0);
                                     if self.pill(ui, "Cancel", false).clicked() {
@@ -1572,7 +1615,7 @@ impl eframe::App for VesperApp {
                                     ui.vertical(|ui| {
                                         let mut h = self.wake_hour;
                                         let res = knob(
-                                            ui, &mut h, 0.0, 23.0, 46.0, theme::ACCENT,
+                                            ui, &mut h, 0.0, 23.0, 46.0, theme::accent(),
                                             7.0, |v| format!("{:02}", v as i32),
                                         );
                                         if h != self.wake_hour
@@ -1587,7 +1630,7 @@ impl eframe::App for VesperApp {
                                     ui.vertical(|ui| {
                                         let mut m = self.wake_min;
                                         let res = knob(
-                                            ui, &mut m, 0.0, 59.0, 46.0, theme::ACCENT,
+                                            ui, &mut m, 0.0, 59.0, 46.0, theme::accent(),
                                             0.0, |v| format!("{:02}", v as i32),
                                         );
                                         if m != self.wake_min
@@ -1602,7 +1645,7 @@ impl eframe::App for VesperApp {
                                     ui.vertical(|ui| {
                                         let mut m = self.wake_rise_min;
                                         let res = knob(
-                                            ui, &mut m, 1.0, 30.0, 46.0, theme::WARM,
+                                            ui, &mut m, 1.0, 30.0, 46.0, theme::warm(),
                                             10.0, |v| format!("{}m", v as i32),
                                         );
                                         if m != self.wake_rise_min
@@ -1645,9 +1688,9 @@ impl eframe::App for VesperApp {
                     master_bg,
                     skin::panel(
                         master_frame.response.rect,
-                        theme::PANELHI_TOP,
-                        theme::PANELHI_BOT,
-                        theme::EDGE,
+                        theme::panelhi_top(),
+                        theme::panelhi_bot(),
+                        theme::edge(),
                     ),
                 );
                 ui.add_space(8.0);
@@ -1658,7 +1701,7 @@ impl eframe::App for VesperApp {
                     ui.vertical(|ui| {
                         let mut sp = self.speed_ui;
                         let res = knob(
-                            ui, &mut sp, 25.0, 300.0, 56.0, theme::ACCENT, 100.0,
+                            ui, &mut sp, 25.0, 300.0, 56.0, theme::accent(), 100.0,
                             |v| format!("{:.1}x", v / 100.0),
                         );
                         if sp != self.speed_ui || res.committed.is_some() {
@@ -1710,7 +1753,7 @@ impl eframe::App for VesperApp {
                             let active = self.driver.mode == Some(Mode::Undulate);
                             let stroke = Stroke::new(
                                 1.5,
-                                if active { theme::ACCENT } else { theme::EDGE },
+                                if active { theme::accent() } else { theme::edge() },
                             );
                             let by = breathe_rect.bottom();
                             let bus_y = by + 6.0;
@@ -1825,7 +1868,7 @@ impl eframe::App for VesperApp {
                                      the same network/subnet as this PC.",
                                 )
                                 .size(10.0)
-                                .color(theme::MUTED),
+                                .color(theme::muted()),
                             );
                         }
                         // Light cards: reflow into a responsive grid. Pick the

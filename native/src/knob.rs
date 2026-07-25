@@ -72,14 +72,14 @@ pub fn knob(
         painter.add(skin::vgrad_circle(
             c,
             bez_r,
-            theme::STEEL_TOP,
-            theme::STEEL_BOT,
+            theme::steel_top(),
+            theme::steel_bot(),
         ));
         painter.circle_stroke(c, bez_r, Stroke::new(1.0, Color32::from_black_alpha(140)));
 
         // recessed face + top bevel highlight
         let face_r = size / 2.0 - 7.0;
-        painter.circle_filled(c, face_r, theme::KNOB_FACE);
+        painter.circle_filled(c, face_r, theme::knob_face());
         painter.circle_stroke(c, face_r, Stroke::new(1.0, Color32::from_black_alpha(120)));
         // glassy sheen: a soft highlight blob in the upper half of the face
         painter.circle_filled(
@@ -92,7 +92,7 @@ pub fn knob(
         let arc_r = size / 2.0 - 7.0;
         painter.add(Shape::line(
             arc_points(c, arc_r, START, -SWEEP),
-            Stroke::new(4.0, theme::TRACK),
+            Stroke::new(4.0, theme::track()),
         ));
         if f > 0.0 {
             painter.add(Shape::line(
@@ -115,7 +115,7 @@ pub fn knob(
             Align2::CENTER_CENTER,
             fmt(*value),
             FontId::monospace(9.0),
-            theme::TEXT,
+            theme::text(),
         );
     }
 
@@ -135,8 +135,8 @@ pub fn toggle(ui: &mut Ui, id: egui::Id, on: &mut bool) -> bool {
             .ctx()
             .animate_value_with_time(id, if *on { 1.0 } else { 0.0 }, 0.18);
         let painter = ui.painter();
-        let off = theme::TOGGLE_OFF;
-        let green = theme::GREEN;
+        let off = theme::toggle_off();
+        let green = theme::green();
         let mix = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * pos) as u8;
         let fill = Color32::from_rgb(
             mix(off.r(), green.r()),

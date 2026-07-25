@@ -131,9 +131,9 @@ impl Splash {
                     screen,
                     egui::Rounding::ZERO,
                     Color32::from_rgba_unmultiplied(
-                        theme::BG_BOT.r(),
-                        theme::BG_BOT.g(),
-                        theme::BG_BOT.b(),
+                        theme::bg_bot().r(),
+                        theme::bg_bot().g(),
+                        theme::bg_bot().b(),
                         a(1.0),
                     ),
                 );
