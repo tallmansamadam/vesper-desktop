@@ -285,7 +285,7 @@ impl VesperApp {
             driver: Driver::new(music.level_handle(), music.tone_handle()),
             audio: Ambience::new(root.join("audio")),
             music,
-            noise: noise::Noise::new(),
+            noise: noise::Noise::new(root.join("audio")),
             noise_open: false,
             timer_open: false,
             timer_minutes: 30.0,
@@ -1764,6 +1764,40 @@ fn main() -> eframe::Result<()> {
                 if maxv > 20 { "LOOPBACK WORKS" } else { "no signal captured" }
             ),
         );
+        return Ok(());
+    }
+
+    // Headless check that every noise layer actually reaches the speakers -
+    // synthesised and recorded alike - by raising each one alone and watching
+    // the loopback capture. `vesper.exe --noisecheck [out.txt]`.
+    if args.get(1).map(String::as_str) == Some("--noisecheck") {
+        let mut m = music::Music::new();
+        let started = m.start();
+        let lvl = m.level_handle();
+        let mut n = noise::Noise::new(root.join("audio"));
+        n.set_master(100.0);
+        let mut report = format!("loopback started: {started}\n");
+        for k in noise::KINDS {
+            n.set_level(k, 100.0);
+            std::thread::sleep(Duration::from_millis(400)); // let it spin up
+            let mut peak = 0u32;
+            for _ in 0..12 {
+                std::thread::sleep(Duration::from_millis(80));
+                peak = peak.max(lvl.load(std::sync::atomic::Ordering::Relaxed));
+            }
+            n.set_level(k, 0.0);
+            std::thread::sleep(Duration::from_millis(250)); // let it decay
+            report.push_str(&format!(
+                "  {:10} {:>5}  {}  {}\n",
+                k.label(),
+                peak,
+                if k.sample_name().is_some() { "recorded " } else { "synth    " },
+                if peak > 15 { "AUDIBLE" } else { "SILENT" }
+            ));
+        }
+        n.stop();
+        let path = args.get(2).cloned().unwrap_or_else(|| "noisecheck.txt".into());
+        let _ = std::fs::write(path, report);
         return Ok(());
     }
 
