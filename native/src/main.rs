@@ -300,6 +300,10 @@ struct VesperApp {
     /// while the window is hidden.
     shared_lights: Arc<std::sync::Mutex<Vec<Arc<Light>>>>,
     splash: splash::Splash,
+    /// When the UI began assembling itself under the fading splash.
+    intro_start: Option<Instant>,
+    /// A brief tint in a scene's own colour, as feedback that it was applied.
+    scene_flash: Option<(Instant, Color32)>,
     /// Per-light UI mirrors: id -> (brightness knob, white knob).
     knobs: HashMap<String, (f32, f32)>,
     toggles: HashMap<String, bool>,
@@ -380,6 +384,8 @@ impl VesperApp {
             really_quit,
             shared_lights,
             splash: splash::Splash::new(),
+            intro_start: None,
+            scene_flash: None,
             knobs: HashMap::new(),
             toggles: HashMap::new(),
             pickers: HashMap::new(),
@@ -588,6 +594,10 @@ impl VesperApp {
                     return;
                 }
                 let sc = &SCENES[i];
+                let stops = tile_stops(sc);
+                let mid = stops[stops.len() / 2];
+                self.scene_flash =
+                    Some((Instant::now(), Color32::from_rgb(mid[0], mid[1], mid[2])));
                 self.set_status(format!("Applying scene: {} …", sc.name), false);
                 let lights = self.lights.clone();
                 let name = sc.name;
@@ -612,6 +622,9 @@ impl VesperApp {
                 let name = sc.name.clone();
                 let colors = sc.colors.clone();
                 let pct = sc.pct;
+                let mid = colors[colors.len() / 2];
+                self.scene_flash =
+                    Some((Instant::now(), Color32::from_rgb(mid[0], mid[1], mid[2])));
                 self.set_status(format!("Applying scene: {name} …"), false);
                 let lights = self.lights.clone();
                 let ctrl = self.ctrl.clone();
@@ -855,6 +868,18 @@ impl VesperApp {
                 .text(rect.center(), Align2::CENTER_CENTER, label, font, fg);
         }
         resp
+    }
+
+    /// Opacity for the `idx`-th section of the intro cascade: the panels fade
+    /// in one after another as the splash hands over, so the app assembles
+    /// itself instead of appearing all at once.
+    fn intro_alpha(&self, idx: usize) -> f32 {
+        let Some(start) = self.intro_start else {
+            return 0.0;
+        };
+        let ms = start.elapsed().as_secs_f32() * 1000.0 - idx as f32 * 85.0;
+        let a = (ms / 400.0).clamp(0.0, 1.0);
+        1.0 - (1.0 - a) * (1.0 - a) // ease out
     }
 
     fn caption(ui: &mut egui::Ui, text: &str) {
@@ -1244,6 +1269,18 @@ impl eframe::App for VesperApp {
             }
         }
 
+        // The moment the splash starts fading, begin assembling the UI beneath
+        // it so the two overlap instead of cutting.
+        if self.intro_start.is_none() && self.splash.handover() > 0.0 {
+            self.intro_start = Some(Instant::now());
+        }
+        if self
+            .intro_start
+            .is_some_and(|s| s.elapsed() < Duration::from_millis(1400))
+        {
+            ctx.request_repaint();
+        }
+
         let mut acts: Vec<Act> = Vec::new();
 
         egui::CentralPanel::default()
@@ -1258,7 +1295,37 @@ impl eframe::App for VesperApp {
                 ui.painter()
                     .add(skin::vgrad(ui.clip_rect(), theme::BG_TOP, theme::BG_BOT));
 
+                // Scene feedback: the room's new colour washes down the top of
+                // the window and fades - a nod that the scene landed, not a
+                // flash that demands attention.
+                if let Some((t0, col)) = self.scene_flash {
+                    let e = t0.elapsed().as_secs_f32();
+                    if e >= 1.1 {
+                        self.scene_flash = None;
+                    } else {
+                        let a = (1.0 - e / 1.1).powi(2) * 0.22;
+                        let r = ui.clip_rect();
+                        let wash = Rect::from_min_max(
+                            r.min,
+                            Pos2::new(r.max.x, r.min.y + r.height() * 0.45),
+                        );
+                        ui.painter().add(skin::vgrad(
+                            wash,
+                            Color32::from_rgba_unmultiplied(
+                                col.r(),
+                                col.g(),
+                                col.b(),
+                                (a * 255.0) as u8,
+                            ),
+                            Color32::from_rgba_unmultiplied(col.r(), col.g(), col.b(), 0),
+                        ));
+                        ctx.request_repaint();
+                    }
+                }
+
                 // ---- toolbar -------------------------------------------------
+                let intro0 = self.intro_alpha(0);
+                ui.set_opacity(intro0);
                 ui.horizontal(|ui| {
                     ui.scope(|ui| {
                         ui.spacing_mut().item_spacing.x = 0.0;
@@ -1297,6 +1364,7 @@ impl eframe::App for VesperApp {
                 ui.add_space(6.0);
 
                 // ---- master + volume ----------------------------------------
+                ui.set_opacity(self.intro_alpha(1));
                 let master_bg = ui.painter().add(egui::Shape::Noop);
                 let master_frame = egui::Frame::none()
                     .inner_margin(egui::Margin::symmetric(16.0, 12.0))
@@ -1585,6 +1653,7 @@ impl eframe::App for VesperApp {
                 ui.add_space(8.0);
 
                 // ---- speed + effects + screen sync --------------------------
+                ui.set_opacity(self.intro_alpha(2));
                 ui.horizontal(|ui| {
                     ui.vertical(|ui| {
                         let mut sp = self.speed_ui;
@@ -1677,6 +1746,7 @@ impl eframe::App for VesperApp {
                 ui.add_space(8.0);
 
                 // ---- scrollable scenes + lights -----------------------------
+                ui.set_opacity(self.intro_alpha(3));
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .show(ui, |ui| {

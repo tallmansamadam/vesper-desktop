@@ -72,6 +72,18 @@ impl Splash {
         }
     }
 
+    /// 0 while the dial is still sweeping, then rises to 1 as the overlay
+    /// fades. The app uses this to start populating itself underneath, so the
+    /// splash hands over to a UI that is already assembling rather than
+    /// cutting to a finished screen.
+    pub fn handover(&self) -> f32 {
+        if self.done {
+            return 1.0;
+        }
+        let ms = self.start.elapsed().as_secs_f32() * 1000.0;
+        ((ms - (SWEEP_MS + HOLD_MS)) / FADE_MS).clamp(0.0, 1.0)
+    }
+
     /// Paint one frame of the overlay; a no-op once the animation has ended,
     /// so callers can simply call it every frame.
     pub fn show(&mut self, ctx: &egui::Context) {
