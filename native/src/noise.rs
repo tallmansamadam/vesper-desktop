@@ -124,6 +124,30 @@ impl NoiseKind {
     }
 }
 
+/// A named mix of layers - the noise panel's equivalent of a light scene.
+/// Only the layers a place actually has are listed; the rest go to zero.
+pub struct NoiseScene {
+    pub name: &'static str,
+    pub mix: &'static [(NoiseKind, f32)],
+}
+
+use NoiseKind as K;
+
+pub const SCENES: &[NoiseScene] = &[
+    NoiseScene { name: "Beach", mix: &[(K::Surf, 72.0), (K::Shore, 30.0), (K::Wind, 22.0)] },
+    NoiseScene { name: "Rainstorm", mix: &[(K::Rain, 68.0), (K::Brown, 38.0), (K::Wind, 42.0)] },
+    NoiseScene { name: "Forest", mix: &[(K::Birds, 55.0), (K::Wind, 30.0), (K::Pink, 16.0), (K::Cicadas, 12.0)] },
+    NoiseScene { name: "Mountain", mix: &[(K::Wind, 72.0), (K::Brown, 32.0), (K::Waterfall, 18.0)] },
+    NoiseScene { name: "Temple", mix: &[(K::Chimes, 46.0), (K::Brown, 30.0), (K::Wind, 20.0), (K::Fountain, 16.0)] },
+    NoiseScene { name: "City", mix: &[(K::City, 60.0), (K::Rain, 30.0), (K::Cafe, 18.0)] },
+    NoiseScene { name: "Café", mix: &[(K::Cafe, 66.0), (K::City, 18.0), (K::Rain, 16.0)] },
+    NoiseScene { name: "Waterfall", mix: &[(K::Waterfall, 62.0), (K::Fountain, 28.0), (K::Birds, 14.0)] },
+    NoiseScene { name: "Zen Garden", mix: &[(K::Fountain, 64.0), (K::Chimes, 36.0), (K::Birds, 18.0)] },
+    NoiseScene { name: "Summer Night", mix: &[(K::Cicadas, 52.0), (K::Brown, 22.0), (K::Wind, 14.0)] },
+    NoiseScene { name: "Deep Focus", mix: &[(K::Pink, 56.0), (K::Brown, 26.0), (K::Rain, 20.0)] },
+    NoiseScene { name: "Open Sea", mix: &[(K::Surf, 58.0), (K::Brown, 32.0), (K::Wind, 26.0)] },
+];
+
 /// Paul Kellet's refined pink-noise filter: shapes white -> ~-3dB/octave.
 fn pink_next(b: &mut [f32; 7], w: f32) -> f32 {
     b[0] = 0.99886 * b[0] + w * 0.0555179;
@@ -392,6 +416,25 @@ impl Noise {
                 }
                 _ => {}
             }
+        }
+    }
+
+    /// Set every layer to a scene's mix (anything it doesn't name goes off).
+    pub fn apply_scene(&mut self, sc: &NoiseScene) {
+        for k in KINDS {
+            let level = sc
+                .mix
+                .iter()
+                .find(|(kind, _)| *kind == k)
+                .map(|(_, v)| *v)
+                .unwrap_or(0.0);
+            self.set_level(k, level);
+        }
+    }
+
+    pub fn clear(&mut self) {
+        for k in KINDS {
+            self.set_level(k, 0.0);
         }
     }
 

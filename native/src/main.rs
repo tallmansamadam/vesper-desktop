@@ -301,6 +301,8 @@ struct VesperApp {
     music: music::Music,
     noise: noise::Noise,
     noise_open: bool,
+    /// Which noise scene is showing, cleared as soon as a dial is touched.
+    noise_scene: Option<usize>,
     timer_open: bool,
     /// Sleep: the clock time to fade off at, and the instant that resolves to.
     timer_hour: f32,
@@ -403,6 +405,7 @@ impl VesperApp {
             music,
             noise: noise::Noise::new(root.join("audio")),
             noise_open: false,
+            noise_scene: None,
             timer_open: false,
             timer_hour: 23.0,
             timer_min: 0.0,
@@ -1683,6 +1686,25 @@ impl eframe::App for VesperApp {
                         }
                         if self.noise_open {
                             ui.add_space(6.0);
+                            // Places, as mixes of the layers below - the noise
+                            // panel's answer to the light scenes.
+                            ui.horizontal_wrapped(|ui| {
+                                ui.spacing_mut().item_spacing = Vec2::new(4.0, 4.0);
+                                for (i, ns) in noise::SCENES.iter().enumerate() {
+                                    if self
+                                        .pill(ui, ns.name, self.noise_scene == Some(i))
+                                        .clicked()
+                                    {
+                                        self.noise.apply_scene(ns);
+                                        self.noise_scene = Some(i);
+                                    }
+                                }
+                                if self.pill(ui, "Clear", false).clicked() {
+                                    self.noise.clear();
+                                    self.noise_scene = None;
+                                }
+                            });
+                            ui.add_space(8.0);
                             // Grid the noise dials so every one stays visible,
                             // stacking into fewer columns as the width shrinks.
                             let avail = ui.available_width();
@@ -1704,6 +1726,9 @@ impl eframe::App for VesperApp {
                                                 || res.wheeled
                                             {
                                                 self.noise.set_level(k, v);
+                                                // It's their mix now, not the
+                                                // scene's.
+                                                self.noise_scene = None;
                                             }
                                             Self::caption(ui, k.label());
                                         });
@@ -2212,6 +2237,43 @@ fn main() -> eframe::Result<()> {
         };
         let path = args.get(3).cloned().unwrap_or_else(|| "probe.txt".into());
         let _ = std::fs::write(path, out);
+        return Ok(());
+    }
+
+    // Headless check that every noise scene is audible, and roughly how loud
+    // each sits. `vesper.exe --scenecheck [out.txt]`.
+    if args.get(1).map(String::as_str) == Some("--scenecheck") {
+        let mut m = music::Music::new();
+        let started = m.start();
+        let lvl = m.level_handle();
+        let mut n = noise::Noise::new(root.join("audio"));
+        n.set_master(100.0);
+        let mut report = format!("loopback started: {started}\n");
+        for sc in noise::SCENES {
+            n.apply_scene(sc);
+            std::thread::sleep(Duration::from_millis(500));
+            let mut peak = 0u32;
+            for _ in 0..14 {
+                std::thread::sleep(Duration::from_millis(80));
+                peak = peak.max(lvl.load(std::sync::atomic::Ordering::Relaxed));
+            }
+            report.push_str(&format!(
+                "  {:14} {:>5}  {}  [{}]\n",
+                sc.name,
+                peak,
+                if peak > 15 { "AUDIBLE" } else { "SILENT " },
+                sc.mix
+                    .iter()
+                    .map(|(k, v)| format!("{} {}", k.label(), *v as i32))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+            n.clear();
+            std::thread::sleep(Duration::from_millis(300));
+        }
+        n.stop();
+        let path = args.get(2).cloned().unwrap_or_else(|| "scenecheck.txt".into());
+        let _ = std::fs::write(path, report);
         return Ok(());
     }
 
