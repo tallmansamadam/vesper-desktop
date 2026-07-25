@@ -116,7 +116,7 @@ pub fn knob(
             c,
             Align2::CENTER_CENTER,
             fmt(*value),
-            FontId::monospace(9.0),
+            FontId::monospace(10.5),
             theme::text(),
         );
     }

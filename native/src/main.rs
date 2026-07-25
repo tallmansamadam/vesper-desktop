@@ -1145,7 +1145,7 @@ impl VesperApp {
     }
 
     fn caption(ui: &mut egui::Ui, text: &str) {
-        ui.label(RichText::new(text).size(8.0).color(theme::muted()));
+        ui.label(RichText::new(text).size(10.0).color(theme::caption()));
     }
 
     fn scene_tile(&self, ui: &mut egui::Ui, sc: &Scene, size: Vec2) -> egui::Response {
@@ -1287,8 +1287,8 @@ impl VesperApp {
                         );
                         ui.label(
                             RichText::new(format!("{} · {}", l.vendor.name(), l.ip))
-                                .size(8.0)
-                                .color(theme::muted()),
+                                .size(9.5)
+                                .color(theme::caption()),
                         );
                     });
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -1450,8 +1450,8 @@ impl VesperApp {
                 "Runs via Windows Task Scheduler — fires even when Vesper is closed, \
                  while you're signed in.",
             )
-            .size(8.0)
-            .color(theme::muted()),
+            .size(9.5)
+            .color(theme::caption()),
         );
     }
 }
@@ -1822,7 +1822,10 @@ impl eframe::App for VesperApp {
                             // Grid the noise dials so every one stays visible,
                             // stacking into fewer columns as the width shrinks.
                             let avail = ui.available_width();
-                            let cols = (((avail + 10.0) / 62.0).floor() as usize)
+                            // Column width allows for the widest caption
+                            // ("Waterfall") at the caption size, not just the
+                            // dial.
+                            let cols = (((avail + 10.0) / 76.0).floor() as usize)
                                 .clamp(1, noise::KINDS.len());
                             for row in noise::KINDS.chunks(cols) {
                                 ui.horizontal(|ui| {

@@ -230,8 +230,8 @@ pub fn time(ui: &mut Ui, id_src: &str, hour: &mut f32, minute: &mut f32) -> bool
                     Pos2::new(r.center().x, r.min.y),
                     Align2::CENTER_TOP,
                     t,
-                    FontId::proportional(8.0),
-                    theme::muted(),
+                    FontId::proportional(9.5),
+                    theme::caption(),
                 );
             };
             cap(ui, TUBE_W, "HOUR");

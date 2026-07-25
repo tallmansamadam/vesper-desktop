@@ -149,6 +149,18 @@ pub fn steel_bot() -> Color32 { darken(current().edge, 0.58) }
 pub fn knob_face() -> Color32 { darken(current().bg, 0.35) }
 pub fn toggle_off() -> Color32 { lighten(current().panel, 0.12) }
 
+/// Captions sit under knobs at small sizes, where the muted grey is too faint
+/// to read - lift it most of the way to the body text colour.
+pub fn caption() -> Color32 {
+    let t = current();
+    let f = 0.55;
+    Color32::from_rgb(
+        (t.muted[0] as f32 + (t.text[0] as f32 - t.muted[0] as f32) * f) as u8,
+        (t.muted[1] as f32 + (t.text[1] as f32 - t.muted[1] as f32) * f) as u8,
+        (t.muted[2] as f32 + (t.text[2] as f32 - t.muted[2] as f32) * f) as u8,
+    )
+}
+
 pub fn err() -> Color32 {
     if is_light() {
         Color32::from_rgb(190, 40, 40)
