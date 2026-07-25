@@ -337,6 +337,7 @@ struct VesperApp {
     dialog: Option<Dialog>,
     /// Cleared once the window has been placed on-screen (see `place_window`).
     needs_placing: bool,
+    layout_logged: bool,
     /// When the UI began assembling itself under the fading splash.
     intro_start: Option<Instant>,
     /// A brief tint in a scene's own colour, as feedback that it was applied.
@@ -430,6 +431,7 @@ impl VesperApp {
             manual_ip: String::new(),
             dialog: None,
             needs_placing: true,
+            layout_logged: false,
             intro_start: None,
             scene_flash: None,
             knobs: HashMap::new(),
@@ -1528,24 +1530,32 @@ impl eframe::App for VesperApp {
                 }
 
                 // ---- toolbar -------------------------------------------------
+                let avail_w = ui.available_width();
                 let intro0 = self.intro_alpha(0);
                 ui.set_opacity(intro0);
-                ui.horizontal(|ui| {
-                    ui.scope(|ui| {
-                        ui.spacing_mut().item_spacing.x = 0.0;
-                        ui.label(RichText::new("Ves").size(18.0).strong().color(theme::text()));
-                        ui.label(RichText::new("per").size(18.0).strong().color(theme::accent()));
-                    });
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                // Wrapping, not right-aligned: right-to-left pushed the
+                // overflow off the left edge instead of onto a second row.
+                let toolbar_used = ui.horizontal_wrapped(|ui| {
+                    {
+                        ui.scope(|ui| {
+                            ui.spacing_mut().item_spacing.x = 0.0;
+                            ui.label(
+                                RichText::new("Ves").size(18.0).strong().color(theme::text()),
+                            );
+                            ui.label(
+                                RichText::new("per").size(18.0).strong().color(theme::accent()),
+                            );
+                        });
+                        ui.add_space(6.0);
                         let label = if self.discovering { "Discovering…" } else { "Discover" };
                         if self.pill(ui, label, false).clicked() && !self.discovering {
                             acts.push(Act::Discover);
                         }
-                        if self.pill(ui, "All Off", false).clicked() {
-                            acts.push(Act::AllPower(false));
-                        }
                         if self.pill(ui, "All On", true).clicked() {
                             acts.push(Act::AllPower(true));
+                        }
+                        if self.pill(ui, "All Off", false).clicked() {
+                            acts.push(Act::AllPower(false));
                         }
                         let snd = format!("Sound: {}", if self.sound_on { "On" } else { "Off" });
                         if self.pill(ui, &snd, false).clicked() {
@@ -1564,7 +1574,7 @@ impl eframe::App for VesperApp {
                         let before = self.theme_idx;
                         egui::ComboBox::from_id_salt("theme_pick")
                             .selected_text(theme::current().name)
-                            .width(120.0)
+                            .width(96.0)
                             .show_ui(ui, |ui| {
                                 for (i, t) in theme::THEMES.iter().enumerate() {
                                     ui.selectable_value(&mut self.theme_idx, i, t.name);
@@ -1578,8 +1588,25 @@ impl eframe::App for VesperApp {
                                 format!("{{\n  \"theme\": {}\n}}\n", self.theme_idx),
                             );
                         }
-                    });
-                });
+                        ui.min_rect().width()
+                    }
+                })
+                .inner;
+                // One-shot layout probe (VESPER_LAYOUT_LOG=<file>): what the
+                // rows actually need vs the width they get.
+                if let Ok(path) = std::env::var("VESPER_LAYOUT_LOG") {
+                    if self.intro_start.is_some() && !self.layout_logged {
+                        self.layout_logged = true;
+                        let _ = std::fs::write(
+                            path,
+                            format!(
+                                "available width: {avail_w:.0}\ntoolbar needs:   {toolbar_used:.0}\n\
+                                 overflow:        {:.0}\n",
+                                (toolbar_used - avail_w).max(0.0)
+                            ),
+                        );
+                    }
+                }
                 ui.add_space(2.0);
                 ui.label(
                     RichText::new(&self.status)
@@ -2232,9 +2259,12 @@ fn main() -> eframe::Result<()> {
         return Ok(());
     }
 
+    // Wide enough for the toolbar's full run of buttons (measured at ~578px
+    // of content plus margins); everything below wraps or scrolls, so this is
+    // a comfortable size rather than a required one.
     let mut viewport = egui::ViewportBuilder::default()
-        .with_inner_size([544.0, 884.0])
-        .with_min_inner_size([496.0, 560.0])
+        .with_inner_size([660.0, 900.0])
+        .with_min_inner_size([430.0, 520.0])
         .with_title("Vesper");
     if let Some(icon) = load_icon(&root) {
         viewport = viewport.with_icon(Arc::new(icon));
