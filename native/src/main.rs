@@ -23,6 +23,7 @@ mod noise;
 mod scenes;
 mod schedule;
 mod screen;
+mod single;
 mod skin;
 mod splash;
 mod system;
@@ -334,6 +335,8 @@ struct VesperApp {
     settings_path: PathBuf,
     manual_ip: String,
     dialog: Option<Dialog>,
+    /// Cleared once the window has been placed on-screen (see `place_window`).
+    needs_placing: bool,
     /// When the UI began assembling itself under the fading splash.
     intro_start: Option<Instant>,
     /// A brief tint in a scene's own colour, as feedback that it was applied.
@@ -426,6 +429,7 @@ impl VesperApp {
             settings_path,
             manual_ip: String::new(),
             dialog: None,
+            needs_placing: true,
             intro_start: None,
             scene_flash: None,
             knobs: HashMap::new(),
@@ -438,6 +442,32 @@ impl VesperApp {
     }
 
     // -- plumbing ----------------------------------------------------------
+
+    /// Centre the window on the monitor, and never let it start above or left
+    /// of the origin - that placed the title bar and left edge off-screen,
+    /// where they can't be grabbed. Runs once, as soon as the monitor size is
+    /// known (it isn't on the very first frame).
+    fn place_window(&mut self, ctx: &egui::Context) {
+        if !self.needs_placing {
+            return;
+        }
+        let (monitor, outer) = ctx.input(|i| {
+            (
+                i.viewport().monitor_size,
+                i.viewport().outer_rect.map(|r| r.size()),
+            )
+        });
+        let (Some(monitor), Some(size)) = (monitor, outer) else {
+            ctx.request_repaint(); // sizes not published yet; try next frame
+            return;
+        };
+        let pos = Pos2::new(
+            ((monitor.x - size.x) * 0.5).max(0.0),
+            ((monitor.y - size.y) * 0.5).max(0.0),
+        );
+        ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(pos));
+        self.needs_placing = false;
+    }
 
     fn set_status(&mut self, text: impl Into<String>, err: bool) {
         self.status = text.into();
@@ -1387,6 +1417,7 @@ impl VesperApp {
 
 impl eframe::App for VesperApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.place_window(ctx);
         self.drain_messages(ctx);
         self.flush_pending(ctx);
 
@@ -2193,6 +2224,14 @@ fn main() -> eframe::Result<()> {
         let _ = std::fs::write(path, out);
         return Ok(());
     }
+    // Past the headless modes: only one GUI at a time. A second launch brings
+    // the running one forward (it's probably hidden in the tray, which is
+    // exactly when someone clicks the shortcut again) rather than stacking up
+    // another tray icon, audio engine and set of commands to the same bulbs.
+    if single::already_running("Vesper") {
+        return Ok(());
+    }
+
     let mut viewport = egui::ViewportBuilder::default()
         .with_inner_size([544.0, 884.0])
         .with_min_inner_size([496.0, 560.0])
