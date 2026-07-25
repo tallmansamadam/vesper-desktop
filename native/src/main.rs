@@ -22,6 +22,7 @@ mod scenes;
 mod schedule;
 mod screen;
 mod skin;
+mod system;
 mod theme;
 mod util;
 mod wiz;
@@ -62,6 +63,10 @@ enum Msg {
     PlayAmbience(&'static str),
     Rediscover,
     SunriseDone,
+    SysShow,
+    SysPower(bool),
+    SysToggle,
+    SysQuit,
 }
 
 /// Deferred user intents collected during the UI pass (avoids borrow
@@ -230,6 +235,8 @@ struct VesperApp {
     sched_min: f32,
     sched_days: [bool; 7],
     sched_scene: String,
+    _system: system::System,
+    really_quit: bool,
     /// Per-light UI mirrors: id -> (brightness knob, white knob).
     knobs: HashMap<String, (f32, f32)>,
     toggles: HashMap<String, bool>,
@@ -255,6 +262,7 @@ impl VesperApp {
         let (tx, rx) = channel();
         let ctrl = Arc::new(Controller::new(&root));
         spawn_texture_loader(root.clone(), cc.egui_ctx.clone(), tx.clone());
+        let sys = system::init(&root, tx.clone(), cc.egui_ctx.clone());
 
         let mut app = VesperApp {
             ctrl,
@@ -290,6 +298,8 @@ impl VesperApp {
             sched_min: 0.0,
             sched_days: [true; 7],
             sched_scene: "Relax".to_string(),
+            _system: sys,
+            really_quit: false,
             knobs: HashMap::new(),
             toggles: HashMap::new(),
             pickers: HashMap::new(),
@@ -701,6 +711,20 @@ impl VesperApp {
                 Msg::PlayAmbience(key) => self.audio.play(key),
                 Msg::Rediscover => self.spawn_discover(ctx),
                 Msg::SunriseDone => self.sunrise_stop = None,
+                Msg::SysShow => {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                }
+                Msg::SysPower(on) => self.act(ctx, Act::AllPower(on)),
+                Msg::SysToggle => {
+                    let all_on = !self.lights.is_empty()
+                        && self.lights.iter().all(|l| l.power());
+                    self.act(ctx, Act::AllPower(!all_on));
+                }
+                Msg::SysQuit => {
+                    self.really_quit = true;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
             }
         }
     }
@@ -1077,6 +1101,14 @@ impl eframe::App for VesperApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.drain_messages(ctx);
         self.flush_pending(ctx);
+
+        // Close button minimises to the tray instead of quitting (unless the
+        // tray's Quit was chosen, which sets really_quit).
+        if ctx.input(|i| i.viewport().close_requested()) && !self.really_quit {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            self.set_status("Minimised to tray — right-click the tray icon for options.", false);
+        }
         if self.driver.mode.is_some() {
             ctx.request_repaint_after(Duration::from_millis(200));
         }
@@ -1225,26 +1257,34 @@ impl eframe::App for VesperApp {
                         }
                         if self.noise_open {
                             ui.add_space(6.0);
-                            ui.horizontal_wrapped(|ui| {
-                                ui.spacing_mut().item_spacing = Vec2::new(10.0, 8.0);
-                                for k in noise::KINDS {
-                                    ui.vertical(|ui| {
-                                        let mut v = self.noise.level_pct(k);
-                                        let before = v;
-                                        let res = knob(
-                                            ui, &mut v, 0.0, 100.0, 46.0, theme::GREEN,
-                                            0.0, |x| format!("{}", x as i32),
-                                        );
-                                        if v != before
-                                            || res.committed.is_some()
-                                            || res.wheeled
-                                        {
-                                            self.noise.set_level(k, v);
-                                        }
-                                        Self::caption(ui, k.label());
-                                    });
-                                }
-                            });
+                            // Grid the noise dials so every one stays visible,
+                            // stacking into fewer columns as the width shrinks.
+                            let avail = ui.available_width();
+                            let cols = (((avail + 10.0) / 62.0).floor() as usize)
+                                .clamp(1, noise::KINDS.len());
+                            for row in noise::KINDS.chunks(cols) {
+                                ui.horizontal(|ui| {
+                                    ui.spacing_mut().item_spacing.x = 10.0;
+                                    for &k in row {
+                                        ui.vertical(|ui| {
+                                            let mut v = self.noise.level_pct(k);
+                                            let before = v;
+                                            let res = knob(
+                                                ui, &mut v, 0.0, 100.0, 46.0, theme::GREEN,
+                                                0.0, |x| format!("{}", x as i32),
+                                            );
+                                            if v != before
+                                                || res.committed.is_some()
+                                                || res.wheeled
+                                            {
+                                                self.noise.set_level(k, v);
+                                            }
+                                            Self::caption(ui, k.label());
+                                        });
+                                    }
+                                });
+                                ui.add_space(8.0);
+                            }
                         }
 
                         // ---- sleep timer (collapsible) ----------------------
