@@ -139,8 +139,15 @@ pub const SCENES: &[NoiseScene] = &[
     NoiseScene { name: "Forest", mix: &[(K::Birds, 55.0), (K::Wind, 30.0), (K::Pink, 16.0), (K::Cicadas, 12.0)] },
     NoiseScene { name: "Mountain", mix: &[(K::Wind, 72.0), (K::Brown, 32.0), (K::Waterfall, 18.0)] },
     NoiseScene { name: "Temple", mix: &[(K::Chimes, 46.0), (K::Brown, 30.0), (K::Wind, 20.0), (K::Fountain, 16.0)] },
-    NoiseScene { name: "City", mix: &[(K::City, 60.0), (K::Rain, 30.0), (K::Cafe, 18.0)] },
-    NoiseScene { name: "Café", mix: &[(K::Cafe, 66.0), (K::City, 18.0), (K::Rain, 16.0)] },
+    // Dry by default - rain belongs to the two moods below, not baked into
+    // every urban room.
+    NoiseScene { name: "City", mix: &[(K::City, 66.0), (K::Cafe, 16.0), (K::Wind, 12.0)] },
+    NoiseScene { name: "Café", mix: &[(K::Cafe, 72.0), (K::City, 16.0), (K::Pink, 10.0)] },
+    // Wet streets under streetlamps: rain over traffic, with a low rumble
+    // doing the work of distance and weather.
+    NoiseScene { name: "Sodium Rain", mix: &[(K::Rain, 58.0), (K::City, 44.0), (K::Brown, 28.0), (K::Wind, 18.0)] },
+    // Inside, warm and dry, watching it come down on the glass.
+    NoiseScene { name: "Window Seat", mix: &[(K::Cafe, 58.0), (K::Rain, 46.0), (K::Brown, 18.0), (K::City, 12.0)] },
     NoiseScene { name: "Waterfall", mix: &[(K::Waterfall, 62.0), (K::Fountain, 28.0), (K::Birds, 14.0)] },
     NoiseScene { name: "Zen Garden", mix: &[(K::Fountain, 64.0), (K::Chimes, 36.0), (K::Birds, 18.0)] },
     NoiseScene { name: "Summer Night", mix: &[(K::Cicadas, 52.0), (K::Brown, 22.0), (K::Wind, 14.0)] },
