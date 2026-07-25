@@ -104,6 +104,22 @@ SCENES = [
      "colors": [(220, 90, 20), (200, 40, 20), (240, 170, 40)]},
     {"name": "Snow",      "kind": "palette", "pct": 55,
      "colors": [(180, 210, 255), (140, 180, 235), (220, 235, 255)]},
+
+    # --- places, not just palettes -----------------------------------------
+    {"name": "Fireflies", "kind": "palette", "pct": 22,
+     "colors": [(190, 255, 90), (120, 200, 60), (40, 70, 40)]},
+    {"name": "Onsen",     "kind": "palette", "pct": 40,
+     "colors": [(255, 190, 120), (200, 235, 190), (255, 150, 90)]},
+    {"name": "Shrine",    "kind": "palette", "pct": 45,
+     "colors": [(255, 60, 40), (255, 150, 50), (200, 20, 30)]},
+    {"name": "Koi Pond",  "kind": "palette", "pct": 48,
+     "colors": [(0, 130, 110), (255, 120, 40), (20, 90, 80)]},
+    {"name": "Lantern Festival", "kind": "palette", "pct": 58,
+     "colors": [(255, 130, 40), (255, 80, 60), (255, 190, 90)]},
+    {"name": "Bamboo Grove", "kind": "palette", "pct": 50,
+     "colors": [(70, 160, 70), (130, 200, 90), (30, 110, 70)]},
+    {"name": "Starfall",  "kind": "palette", "pct": 35,
+     "colors": [(60, 60, 170), (140, 120, 255), (230, 235, 255)]},
 ]
 
 
@@ -179,6 +195,13 @@ QUERIES = {
     "Twilight":    "dusk sky",
     "Autumn":      "autumn leaves",
     "Snow":        "snow winter",
+    "Fireflies":   "fireflies",
+    "Onsen":       "hot spring",
+    "Shrine":      "torii shrine",
+    "Koi Pond":    "koi pond",
+    "Lantern Festival": "lantern festival",
+    "Bamboo Grove": "bamboo",
+    "Starfall":    "shooting stars night",
 }
 
 
@@ -202,6 +225,9 @@ AMBIENCE = {
     "Sakura": "chimes",      "Lavender": "warm",      "Mint": "wind",
     "Storm": "storm",        "Lava": "fire",          "Moonlight": "night",
     "Twilight": "night",     "Autumn": "leaves",      "Snow": "wind",
+    "Fireflies": "cicadas",  "Onsen": "stream",       "Shrine": "chimes",
+    "Koi Pond": "stream",    "Lantern Festival": "crowd",
+    "Bamboo Grove": "leaves", "Starfall": "deep_space",
 }
 
 # Synth simulacrum to use when a real recording (<key>.ogg) is unavailable.

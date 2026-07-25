@@ -75,6 +75,15 @@ pub static SCENES: &[Scene] = &[
     palette("Twilight", 50.0, &[[60, 45, 135], [120, 70, 185], [45, 65, 150]]),
     palette("Autumn", 55.0, &[[220, 90, 20], [200, 40, 20], [240, 170, 40]]),
     palette("Snow", 55.0, &[[180, 210, 255], [140, 180, 235], [220, 235, 255]]),
+
+    // --- places, not just palettes ------------------------------------------
+    palette("Fireflies", 22.0, &[[190, 255, 90], [120, 200, 60], [40, 70, 40]]),
+    palette("Onsen", 40.0, &[[255, 190, 120], [200, 235, 190], [255, 150, 90]]),
+    palette("Shrine", 45.0, &[[255, 60, 40], [255, 150, 50], [200, 20, 30]]),
+    palette("Koi Pond", 48.0, &[[0, 130, 110], [255, 120, 40], [20, 90, 80]]),
+    palette("Lantern Festival", 58.0, &[[255, 130, 40], [255, 80, 60], [255, 190, 90]]),
+    palette("Bamboo Grove", 50.0, &[[70, 160, 70], [130, 200, 90], [30, 110, 70]]),
+    palette("Starfall", 35.0, &[[60, 60, 170], [140, 120, 255], [230, 235, 255]]),
 ];
 
 /// Approximate RGB tints for white colour temperatures (tile art).
@@ -135,6 +144,9 @@ pub fn scene_ambience(name: &str) -> &'static str {
         "Sakura" => "chimes", "Lavender" => "warm", "Mint" => "wind",
         "Storm" => "storm", "Lava" => "fire", "Moonlight" => "night",
         "Twilight" => "night", "Autumn" => "leaves", "Snow" => "wind",
+        "Fireflies" => "cicadas", "Onsen" => "stream", "Shrine" => "chimes",
+        "Koi Pond" => "stream", "Lantern Festival" => "crowd",
+        "Bamboo Grove" => "leaves", "Starfall" => "deep_space",
         _ => "warm",
     }
 }

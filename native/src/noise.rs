@@ -153,6 +153,16 @@ pub const SCENES: &[NoiseScene] = &[
     NoiseScene { name: "Summer Night", mix: &[(K::Cicadas, 52.0), (K::Brown, 22.0), (K::Wind, 14.0)] },
     NoiseScene { name: "Deep Focus", mix: &[(K::Pink, 56.0), (K::Brown, 26.0), (K::Rain, 20.0)] },
     NoiseScene { name: "Open Sea", mix: &[(K::Surf, 58.0), (K::Brown, 32.0), (K::Wind, 26.0)] },
+    NoiseScene { name: "Harbor", mix: &[(K::Shore, 54.0), (K::Surf, 40.0), (K::Wind, 28.0), (K::Brown, 20.0)] },
+    NoiseScene { name: "Dawn Chorus", mix: &[(K::Birds, 64.0), (K::Wind, 22.0), (K::Pink, 12.0)] },
+    NoiseScene { name: "Cicada Noon", mix: &[(K::Cicadas, 74.0), (K::Pink, 18.0), (K::Wind, 12.0)] },
+    NoiseScene { name: "Riverbank", mix: &[(K::Fountain, 70.0), (K::Birds, 32.0), (K::Wind, 22.0)] },
+    NoiseScene { name: "Night Market", mix: &[(K::Cafe, 52.0), (K::City, 34.0), (K::Chimes, 18.0)] },
+    NoiseScene { name: "Cloudburst", mix: &[(K::Rain, 78.0), (K::Wind, 46.0), (K::Brown, 34.0)] },
+    // A hush rather than a sound: wind with the top taken off it.
+    NoiseScene { name: "Snowfall", mix: &[(K::Wind, 36.0), (K::Pink, 18.0), (K::Brown, 16.0)] },
+    // The deep mechanical hum of somewhere below decks.
+    NoiseScene { name: "Engine Room", mix: &[(K::Brown, 62.0), (K::White, 20.0), (K::Pink, 18.0)] },
 ];
 
 /// Paul Kellet's refined pink-noise filter: shapes white -> ~-3dB/octave.
