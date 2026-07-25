@@ -515,6 +515,16 @@ impl VesperApp {
         self.status_err = err;
     }
 
+    /// Whether every light is on / off, so the power buttons can show which
+    /// state the room is actually in.
+    fn lights_all_on(&self) -> bool {
+        !self.lights.is_empty() && self.lights.iter().all(|l| l.power())
+    }
+
+    fn lights_all_off(&self) -> bool {
+        !self.lights.is_empty() && self.lights.iter().all(|l| !l.power())
+    }
+
     fn sync_from_lights(&mut self) {
         for l in &self.lights {
             self.knobs.insert(
@@ -1668,12 +1678,6 @@ impl eframe::App for VesperApp {
                         if self.pill(ui, label, false).clicked() && !self.discovering {
                             acts.push(Act::Discover);
                         }
-                        if self.pill(ui, "All On", true).clicked() {
-                            acts.push(Act::AllPower(true));
-                        }
-                        if self.pill(ui, "All Off", false).clicked() {
-                            acts.push(Act::AllPower(false));
-                        }
                         let snd = format!("Sound: {}", if self.sound_on { "On" } else { "Off" });
                         if self.pill(ui, &snd, false).clicked() {
                             acts.push(Act::ToggleSound);
@@ -1771,12 +1775,27 @@ impl eframe::App for VesperApp {
                                 }
                                 ui.add_space(10.0);
                                 ui.vertical(|ui| {
-                                    ui.add_space(10.0);
+                                    ui.add_space(6.0);
                                     ui.label(
                                         RichText::new("MASTER").size(13.0).strong()
                                             .color(theme::text()),
                                     );
                                     Self::caption(ui, "ALL LIGHTS");
+                                    ui.add_space(8.0);
+                                    // Power lives with the light controls, not
+                                    // in the toolbar - it fills this column and
+                                    // takes two buttons out of a row that was
+                                    // already overflowing.
+                                    ui.horizontal(|ui| {
+                                        if self.pill(ui, "All On", self.lights_all_on()).clicked()
+                                        {
+                                            acts.push(Act::AllPower(true));
+                                        }
+                                        if self.pill(ui, "All Off", self.lights_all_off()).clicked()
+                                        {
+                                            acts.push(Act::AllPower(false));
+                                        }
+                                    });
                                 });
                             });
 
@@ -1820,7 +1839,7 @@ impl eframe::App for VesperApp {
                                             Self::caption(ui, "NOISE");
                                         });
                                     });
-                                    ui.add_space(11.0); // room for the connectors
+                                    ui.add_space(18.0); // room for the connectors
                                     let mid = (scene_r.center().x + noise_r.center().x) * 0.5;
                                     let mut master_r = Rect::NOTHING;
                                     ui.horizontal(|ui| {
@@ -1846,13 +1865,14 @@ impl eframe::App for VesperApp {
                                     }
                                     // signal flow: both buses down into master
                                     if master_r != Rect::NOTHING {
-                                        let st = Stroke::new(1.5, theme::edge());
-                                        let bus_y = scene_r.bottom() + 16.0;
+                                        let st = Stroke::new(1.5, theme::caption().gamma_multiply(0.5));
+                                        // clear of the captions under each dial
+                                        let bus_y = scene_r.bottom() + 26.0;
                                         let p = ui.painter();
                                         for r in [scene_r, noise_r] {
                                             p.line_segment(
                                                 [
-                                                    Pos2::new(r.center().x, r.bottom() + 11.0),
+                                                    Pos2::new(r.center().x, r.bottom() + 18.0),
                                                     Pos2::new(r.center().x, bus_y),
                                                 ],
                                                 st,

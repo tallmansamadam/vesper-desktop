@@ -23,7 +23,7 @@ const GLASS_TOP: Color32 = Color32::from_rgb(0x14, 0x15, 0x1b);
 /// The neon-orange of a lit cathode, and the near-white core of the glyph
 /// itself - a real tube's filament reads brighter than its halo.
 const CATHODE: Color32 = Color32::from_rgb(0xff, 0x9a, 0x2e);
-const FILAMENT: Color32 = Color32::from_rgb(0xff, 0xe2, 0xb4);
+const FILAMENT: Color32 = Color32::from_rgb(0xff, 0xef, 0xd6);
 
 /// One tube showing `value` (00..=max), draggable. Returns true if it changed.
 fn tube(ui: &mut Ui, id_src: &str, value: &mut f32, max: u32) -> bool {
@@ -125,10 +125,14 @@ fn tube(ui: &mut Ui, id_src: &str, value: &mut f32, max: u32) -> bool {
             );
         }
 
-        // Cathode halo: soft and wide, kept well under the glyph so it haloes
-        // the digit instead of washing it out.
-        for (r, a) in [(TUBE_W * 0.44, 14u8), (TUBE_W * 0.30, 16), (TUBE_W * 0.18, 18)] {
-            painter.circle_filled(c, r, amber(a));
+        // Cathode halo. Concentric discs with a falling alpha, not three fixed
+        // rings: a few translucent circles have visible edges and read as a
+        // flat orange disc behind the digit rather than light coming off it.
+        const HALO: usize = 14;
+        for i in (1..=HALO).rev() {
+            let f = i as f32 / HALO as f32;
+            let a = ((1.0 - f).powf(1.5) * 30.0) as u8 + 1;
+            painter.circle_filled(c, TUBE_W * 0.52 * f, amber(a));
         }
 
         // The lit digit: one soft bloom behind (same glyph, larger, centred -

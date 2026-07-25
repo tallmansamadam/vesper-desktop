@@ -83,12 +83,17 @@ pub fn knob(
         let face_r = size / 2.0 - 7.0;
         painter.circle_filled(c, face_r, theme::knob_face());
         painter.circle_stroke(c, face_r, Stroke::new(1.0, Color32::from_black_alpha(120)));
-        // glassy sheen: a soft highlight blob in the upper half of the face
-        painter.circle_filled(
-            Pos2::new(c.x, c.y - face_r * 0.42),
-            face_r * 0.55,
-            Color32::from_white_alpha(16),
-        );
+        // Glassy sheen across the top of the face. Built from concentric
+        // discs of falling alpha - a single translucent circle has a hard
+        // edge and reads as a grey smudge on the dial rather than a highlight.
+        for i in 1..=6 {
+            let f = i as f32 / 6.0;
+            painter.circle_filled(
+                Pos2::new(c.x, c.y - face_r * 0.40),
+                face_r * 0.62 * f,
+                Color32::from_white_alpha(((1.0 - f) * 7.0) as u8 + 1),
+            );
+        }
 
         // track + value arc
         let arc_r = size / 2.0 - 7.0;
