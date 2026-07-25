@@ -154,9 +154,13 @@ def frame(size, p):
 
 
 def main():
+    # Rest at the baseline first, so the dial is visibly at zero before it
+    # moves, then ease up from zero velocity - _ease_out leaves the baseline at
+    # full speed, which reads as starting partway up the sweep.
     size = 240
-    up, hold, down = 26, 8, 14
-    ps = ([_ease_out(i / (up - 1)) for i in range(up)]
+    rest, up, hold, down = 4, 26, 8, 14
+    ps = ([0.0] * rest
+          + [_ease_in_out(i / (up - 1)) for i in range(up)]
           + [1.0] * hold
           + [1.0 - _ease_in_out(i / (down - 1)) for i in range(down)])
 

@@ -13,6 +13,7 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
 pub struct Music {
     level: Arc<AtomicU32>, // milli 0..1000, smoothed loudness envelope
+    tone: Arc<AtomicU32>,  // milli 0..1000, spectral balance: bass .. treble
     stream: Option<cpal::Stream>,
 }
 
@@ -20,6 +21,7 @@ impl Music {
     pub fn new() -> Music {
         Music {
             level: Arc::new(AtomicU32::new(0)),
+            tone: Arc::new(AtomicU32::new(500)),
             stream: None,
         }
     }
@@ -27,6 +29,12 @@ impl Music {
     /// A handle the effect engine reads each frame (0..1000 == silence..loud).
     pub fn level_handle(&self) -> Arc<AtomicU32> {
         self.level.clone()
+    }
+
+    /// Spectral balance handle (0 = all bass, 1000 = all treble), which the
+    /// Music effect swings the hue with.
+    pub fn tone_handle(&self) -> Arc<AtomicU32> {
+        self.tone.clone()
     }
 
     pub fn active(&self) -> bool {
@@ -49,20 +57,46 @@ impl Music {
         let fmt = supported.sample_format();
         let cfg: cpal::StreamConfig = supported.into();
         let level = self.level.clone();
+        let tone = self.tone.clone();
 
         // Fast attack, slow release so the lights punch on transients but ease
-        // back down smoothly. `env` lives inside the (FnMut) callback.
+        // back down smoothly. Alongside the loudness we track a crude spectral
+        // balance: a one-pole low-pass splits each buffer into "bass" (the
+        // filtered signal) and "treble" (what the filter removed); their
+        // energy ratio swings the hue. State lives in the FnMut callback.
         let mut env = 0.0f32;
+        let mut lp = 0.0f32;
+        let mut tone_env = 0.5f32;
         let analyse = move |buf: &[f32]| {
             if buf.is_empty() {
                 return;
             }
-            let sum: f32 = buf.iter().map(|s| s * s).sum();
-            let rms = (sum / buf.len() as f32).sqrt();
+            let mut sum = 0.0f32;
+            let mut low = 0.0f32;
+            let mut high = 0.0f32;
+            for &s in buf {
+                sum += s * s;
+                lp += 0.06 * (s - lp); // ~450 Hz corner at 44.1k
+                low += lp * lp;
+                let h = s - lp;
+                high += h * h;
+            }
+            let n = buf.len() as f32;
+            let rms = (sum / n).sqrt();
             let target = (rms * 3.5).min(1.0);
             let a = if target > env { 0.5 } else { 0.04 };
             env += (target - env) * a;
             level.store((env * 1000.0) as u32, Ordering::Relaxed);
+
+            // Only re-aim the tone when there's signal, so silence doesn't
+            // drag the hue somewhere arbitrary.
+            if rms > 0.002 {
+                let t = (high / (low + high + 1e-9)).clamp(0.0, 1.0);
+                // treble is weaker by nature; stretch it around the midpoint
+                let t = ((t - 0.15) * 2.2 + 0.5).clamp(0.0, 1.0);
+                tone_env += (t - tone_env) * 0.08;
+                tone.store((tone_env * 1000.0) as u32, Ordering::Relaxed);
+            }
         };
 
         let err = |e| eprintln!("music: stream error: {e}");

@@ -58,6 +58,8 @@ struct FxState {
     v: f32,
     last: Option<(i32, i32, i32)>,
     music: Arc<AtomicU32>,
+    music_tone: Arc<AtomicU32>,
+    hue_swing: f32,
 }
 
 fn hsbk_f(h: f32, s: f32, v: f32) -> [u16; 4] {
@@ -170,9 +172,20 @@ fn frame(mode: Mode, ctrl: &Controller, lights: &[Arc<Light>], t: f32, st: &mut 
         }
         Mode::Music => {
             // Scene colours drift slowly (as in flow) while every bulb's
-            // brightness tracks the loudness of the PC's audio output.
+            // brightness tracks the loudness of the PC's audio - and the hue
+            // swings with the music's spectral balance: bass pushes the
+            // colours warm/backward round the wheel, treble pushes them
+            // cool/forward. The swing is eased so it glides rather than
+            // twitching frame to frame.
             let lvl = st.music.load(Ordering::Relaxed) as f32 / 1000.0;
+            let tone = st.music_tone.load(Ordering::Relaxed) as f32 / 1000.0;
             let m = 0.15 + 0.85 * lvl;
+            // Louder passages swing further, so quiet parts stay near the
+            // scene's own colours.
+            let target = (tone - 0.5) * 2.0 * 0.16 * (0.35 + 0.65 * lvl);
+            st.hue_swing += (target - st.hue_swing) * 0.15;
+            let shift = (st.hue_swing * 65536.0) as i32;
+
             let palette: Vec<[u16; 4]> = lights
                 .iter()
                 .filter_map(|l| st.base.get(&l.id).copied())
@@ -185,7 +198,11 @@ fn frame(mode: Mode, ctrl: &Controller, lights: &[Arc<Light>], t: f32, st: &mut 
                 let p = t * 0.15 + i as f32;
                 let i0 = (p as usize) % n;
                 let c = lerp_hsbk(palette[i0], palette[(i0 + 1) % n], p.fract());
-                ctrl.stream_color(l, c[0], c[1], (c[2] as f32 * m) as u16, c[3], 90);
+                let hue = (c[0] as i32 + shift).rem_euclid(65536) as u16;
+                // Lift saturation a little as it swings so the shift reads as
+                // colour rather than a muddy tint.
+                let sat = (c[1] as f32 + (65535.0 - c[1] as f32) * 0.25 * lvl) as u16;
+                ctrl.stream_color(l, hue, sat, (c[2] as f32 * m) as u16, c[3], 90);
             }
         }
     }
@@ -246,16 +263,19 @@ pub struct Driver {
     pub speed_milli: Arc<AtomicU32>,
     /// Music loudness envelope (0..1000), written by the audio capture.
     music_level: Arc<AtomicU32>,
+    /// Music spectral balance (0 = bass .. 1000 = treble).
+    music_tone: Arc<AtomicU32>,
 }
 
 impl Driver {
-    pub fn new(music_level: Arc<AtomicU32>) -> Driver {
+    pub fn new(music_level: Arc<AtomicU32>, music_tone: Arc<AtomicU32>) -> Driver {
         Driver {
             mode: None,
             stop: Arc::new(AtomicBool::new(false)),
             thread: None,
             speed_milli: Arc::new(AtomicU32::new(1000)),
             music_level,
+            music_tone,
         }
     }
 
@@ -270,6 +290,7 @@ impl Driver {
         self.stop = stop.clone();
         let speed = self.speed_milli.clone();
         let music = self.music_level.clone();
+        let music_tone = self.music_tone.clone();
         self.mode = Some(mode);
         let interval = Duration::from_secs_f32(1.0 / mode.fps());
         self.thread = Some(std::thread::spawn(move || {
@@ -281,6 +302,8 @@ impl Driver {
                 v: 0.0,
                 last: None,
                 music,
+                music_tone,
+                hue_swing: 0.0,
             };
             let mut prev = Instant::now();
             let mut et = 0.0f32; // speed-scaled "effect time"

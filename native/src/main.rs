@@ -23,6 +23,7 @@ mod scenes;
 mod schedule;
 mod screen;
 mod skin;
+mod splash;
 mod system;
 mod theme;
 mod util;
@@ -239,6 +240,7 @@ struct VesperApp {
     sched_scene: String,
     _system: system::System,
     really_quit: bool,
+    splash: splash::Splash,
     /// Per-light UI mirrors: id -> (brightness knob, white knob).
     knobs: HashMap<String, (f32, f32)>,
     toggles: HashMap<String, bool>,
@@ -280,7 +282,7 @@ impl VesperApp {
             master: 100.0,
             volume: 60.0,
             speed_ui: 100.0,
-            driver: Driver::new(music.level_handle()),
+            driver: Driver::new(music.level_handle(), music.tone_handle()),
             audio: Ambience::new(root.join("audio")),
             music,
             noise: noise::Noise::new(),
@@ -304,6 +306,7 @@ impl VesperApp {
             sched_scene: "Relax".to_string(),
             _system: sys,
             really_quit: false,
+            splash: splash::Splash::new(),
             knobs: HashMap::new(),
             toggles: HashMap::new(),
             pickers: HashMap::new(),
@@ -327,6 +330,14 @@ impl VesperApp {
                 (l.brightness_pct(), l.hsbk()[3].clamp(2500, 9000) as f32),
             );
             self.toggles.insert(l.id.clone(), l.power());
+        }
+        // Master mirrors the room: after a scene (or any command) it shows the
+        // lights' average brightness rather than whatever it was last dragged
+        // to. Skipped while a knob is mid-drag so it can't fight the user.
+        if !self.lights.is_empty() {
+            let avg = self.lights.iter().map(|l| l.brightness_pct()).sum::<f32>()
+                / self.lights.len() as f32;
+            self.master = avg.round();
         }
     }
 
@@ -1676,6 +1687,10 @@ impl eframe::App for VesperApp {
         for act in acts {
             self.act(ctx, act);
         }
+
+        // Launch animation, painted over the app (which lays itself out and
+        // finishes discovery underneath) and cross-fading away.
+        self.splash.show(ctx);
     }
 }
 
