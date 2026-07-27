@@ -24,7 +24,8 @@ pub fn load(path: &PathBuf) -> Vec<CustomScene> {
     let Ok(text) = std::fs::read_to_string(path) else {
         return out;
     };
-    let Ok(Value::Array(arr)) = serde_json::from_str::<Value>(&text) else {
+    let Ok(Value::Array(arr)) = serde_json::from_str::<Value>(crate::config::strip_bom(&text))
+    else {
         return out;
     };
     for it in arr {

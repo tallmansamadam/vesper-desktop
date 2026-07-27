@@ -8,6 +8,7 @@
 
 mod ambience;
 mod color;
+mod config;
 mod controller;
 mod custom;
 mod effects;
@@ -85,7 +86,6 @@ enum Dialog {
 enum Act {
     Discover,
     AllPower(bool),
-    ToggleSound,
     PairHue,
     PairNano,
     Scene(usize),
@@ -359,7 +359,8 @@ struct VesperApp {
     shared_lights: Arc<std::sync::Mutex<Vec<Arc<Light>>>>,
     splash: splash::Splash,
     theme_idx: usize,
-    settings_path: PathBuf,
+    /// Everything remembered between runs; written whenever it changes.
+    settings: config::Settings,
     manual_ip: String,
     dialog: Option<Dialog>,
     /// Cleared once the window has been placed on-screen (see `place_window`).
@@ -380,13 +381,11 @@ struct VesperApp {
 impl VesperApp {
     fn new(cc: &eframe::CreationContext<'_>, root: PathBuf) -> VesperApp {
         load_fonts(&cc.egui_ctx);
-        let settings_path = root.join("settings.json");
-        let theme_idx = std::fs::read_to_string(&settings_path)
-            .ok()
-            .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
-            .and_then(|v| v.get("theme").and_then(serde_json::Value::as_u64))
-            .unwrap_or(0) as usize;
-        theme::set(theme_idx);
+        // State lives in the platform's config dir; anything left beside the
+        // exe from an older build is moved there once.
+        config::migrate_from(&root);
+        let saved = config::Settings::load();
+        theme::set(saved.theme);
         apply_visuals(&cc.egui_ctx);
         // Float the scrollbar over the content instead of insetting the right
         // edge, so the scrolled area keeps the same left/right margins as the
@@ -396,7 +395,7 @@ impl VesperApp {
         });
 
         let (tx, rx) = channel();
-        let ctrl = Arc::new(Controller::new(&root));
+        let ctrl = Arc::new(Controller::new(&config::dir()));
         spawn_texture_loader(root.clone(), cc.egui_ctx.clone(), tx.clone());
         let shared_lights = Arc::new(std::sync::Mutex::new(Vec::new()));
         let really_quit = Arc::new(AtomicBool::new(false));
@@ -421,32 +420,32 @@ impl VesperApp {
             status: "Ready.".into(),
             status_err: false,
             discovering: false,
-            sound_on: true,
+            sound_on: saved.sound_on,
             master: 100.0,
-            volume: 60.0,
-            scene_vol: 100.0,
-            noise_vol: 100.0,
-            speed_ui: 100.0,
+            volume: saved.volume,
+            scene_vol: saved.scene_vol,
+            noise_vol: saved.noise_vol,
+            speed_ui: saved.speed,
             driver: Driver::new(music.level_handle(), music.tone_handle()),
             audio: Ambience::new(root.join("audio")),
             music,
             noise: noise::Noise::new(root.join("audio")),
             noise_open: false,
-            noise_scene: None,
+            noise_scene: saved.noise_scene,
             timer_open: false,
-            timer_hour: 23.0,
-            timer_min: 0.0,
+            timer_hour: saved.timer_hour,
+            timer_min: saved.timer_min,
             timer_end: None,
-            wake_hour: 7.0,
-            wake_min: 0.0,
-            wake_rise_min: 10.0,
+            wake_hour: saved.wake_hour,
+            wake_min: saved.wake_min,
+            wake_rise_min: saved.wake_rise_min,
             wake_end: None,
             sunrise_stop: None,
-            custom_scenes: custom::load(&root.join("custom_scenes.json")),
-            custom_path: root.join("custom_scenes.json"),
+            custom_scenes: custom::load(&config::file("custom_scenes.json")),
+            custom_path: config::file("custom_scenes.json"),
             custom_name: String::new(),
-            schedules: schedule::load(&root.join("schedules.json")),
-            sched_path: root.join("schedules.json"),
+            schedules: schedule::load(&config::file("schedules.json")),
+            sched_path: config::file("schedules.json"),
             sched_open: false,
             sched_hour: 7.0,
             sched_min: 0.0,
@@ -457,7 +456,7 @@ impl VesperApp {
             shared_lights,
             splash: splash::Splash::new(),
             theme_idx: theme::index(),
-            settings_path,
+            settings: saved.clone(),
             manual_ip: String::new(),
             dialog: None,
             needs_placing: true,
@@ -469,6 +468,14 @@ impl VesperApp {
             pickers: HashMap::new(),
             pending: HashMap::new(),
         };
+        // Put the restored audio state back on the engines.
+        saved.apply_noise(&mut app.noise);
+        app.audio.set_enabled(app.sound_on);
+        app.apply_audio_gains();
+        app.driver.speed_milli.store(
+            (app.speed_ui * 10.0) as u32,
+            std::sync::atomic::Ordering::Relaxed,
+        );
         app.spawn_discover(&cc.egui_ctx);
         app
     }
@@ -508,6 +515,26 @@ impl VesperApp {
         let m = self.volume / 100.0;
         self.audio.set_volume(self.scene_vol * m);
         self.noise.set_master(self.noise_vol * m);
+    }
+
+    /// Snapshot the remembered state and write it out. Cheap enough to call
+    /// whenever one of these settings changes.
+    fn save_settings(&mut self) {
+        let s = &mut self.settings;
+        s.theme = self.theme_idx;
+        s.volume = self.volume;
+        s.scene_vol = self.scene_vol;
+        s.noise_vol = self.noise_vol;
+        s.sound_on = self.sound_on;
+        s.speed = self.speed_ui;
+        s.timer_hour = self.timer_hour;
+        s.timer_min = self.timer_min;
+        s.wake_hour = self.wake_hour;
+        s.wake_min = self.wake_min;
+        s.wake_rise_min = self.wake_rise_min;
+        s.noise_scene = self.noise_scene;
+        s.capture_noise(&self.noise);
+        s.save();
     }
 
     fn set_status(&mut self, text: impl Into<String>, err: bool) {
@@ -639,10 +666,6 @@ impl VesperApp {
                         }
                     },
                 );
-            }
-            Act::ToggleSound => {
-                self.sound_on = !self.sound_on;
-                self.audio.set_enabled(self.sound_on);
             }
             Act::PairHue => {
                 self.set_status("Finding Hue bridge — press its round button now …", false);
@@ -1678,10 +1701,6 @@ impl eframe::App for VesperApp {
                         if self.pill(ui, label, false).clicked() && !self.discovering {
                             acts.push(Act::Discover);
                         }
-                        let snd = format!("Sound: {}", if self.sound_on { "On" } else { "Off" });
-                        if self.pill(ui, &snd, false).clicked() {
-                            acts.push(Act::ToggleSound);
-                        }
                         if self.pill(ui, "+ Hue", false).clicked() {
                             self.dialog = Some(Dialog::Hue);
                         }
@@ -1704,10 +1723,7 @@ impl eframe::App for VesperApp {
                         if self.theme_idx != before {
                             theme::set(self.theme_idx);
                             apply_visuals(ui.ctx());
-                            let _ = std::fs::write(
-                                &self.settings_path,
-                                format!("{{\n  \"theme\": {}\n}}\n", self.theme_idx),
-                            );
+                            self.save_settings();
                         }
                         ui.min_rect().width()
                     }
@@ -1801,100 +1817,109 @@ impl eframe::App for VesperApp {
 
                             let ui = &mut cols[1];
                             Self::group_header(ui, "SOUND");
-                            // The scene and noise buses feed the master, and
-                            // the connectors say so.
+                            // Signal chain reads left to right: the two buses
+                            // stack, a brace joins them, and it runs into the
+                            // output. Stacking them under each other instead of
+                            // over/under the master keeps this half short - it
+                            // was the tallest thing in the panel and left the
+                            // light side mostly empty.
+                            let mut changed = false;
+                            let (mut scene_r, mut noise_r, mut out_r) =
+                                (Rect::NOTHING, Rect::NOTHING, Rect::NOTHING);
                             ui.horizontal(|ui| {
                                 ui.vertical(|ui| {
-                                    let mut changed = false;
-                                    let (mut scene_r, mut noise_r) =
-                                        (Rect::NOTHING, Rect::NOTHING);
                                     ui.horizontal(|ui| {
-                                        ui.vertical(|ui| {
-                                            let mut v = self.scene_vol;
-                                            let r = knob(
-                                                ui, &mut v, 0.0, 100.0, 42.0,
-                                                theme::accent(), 100.0,
-                                                |x| format!("{}", x as i32),
-                                            );
-                                            if v != self.scene_vol || r.committed.is_some() {
-                                                self.scene_vol = v;
-                                                changed = true;
-                                            }
-                                            scene_r = r.rect;
-                                            Self::caption(ui, "SCENE");
-                                        });
-                                        ui.add_space(10.0);
-                                        ui.vertical(|ui| {
-                                            let mut v = self.noise_vol;
-                                            let r = knob(
-                                                ui, &mut v, 0.0, 100.0, 42.0,
-                                                theme::accent(), 100.0,
-                                                |x| format!("{}", x as i32),
-                                            );
-                                            if v != self.noise_vol || r.committed.is_some() {
-                                                self.noise_vol = v;
-                                                changed = true;
-                                            }
-                                            noise_r = r.rect;
-                                            Self::caption(ui, "NOISE");
-                                        });
-                                    });
-                                    ui.add_space(18.0); // room for the connectors
-                                    let mid = (scene_r.center().x + noise_r.center().x) * 0.5;
-                                    let mut master_r = Rect::NOTHING;
-                                    ui.horizontal(|ui| {
-                                        let x0 = ui.cursor().left();
-                                        ui.add_space((mid - x0 - 29.0).max(0.0));
-                                        ui.vertical(|ui| {
-                                            let mut v = self.volume;
-                                            let r = knob(
-                                                ui, &mut v, 0.0, 100.0, 58.0,
-                                                theme::green(), 60.0,
-                                                |x| format!("{}", x as i32),
-                                            );
-                                            if v != self.volume || r.committed.is_some() {
-                                                self.volume = v;
-                                                changed = true;
-                                            }
-                                            master_r = r.rect;
-                                            Self::caption(ui, "VOLUME");
-                                        });
-                                    });
-                                    if changed {
-                                        self.apply_audio_gains();
-                                    }
-                                    // signal flow: both buses down into master
-                                    if master_r != Rect::NOTHING {
-                                        let st = Stroke::new(1.5, theme::caption().gamma_multiply(0.5));
-                                        // clear of the captions under each dial
-                                        let bus_y = scene_r.bottom() + 26.0;
-                                        let p = ui.painter();
-                                        for r in [scene_r, noise_r] {
-                                            p.line_segment(
-                                                [
-                                                    Pos2::new(r.center().x, r.bottom() + 18.0),
-                                                    Pos2::new(r.center().x, bus_y),
-                                                ],
-                                                st,
-                                            );
+                                        let mut v = self.scene_vol;
+                                        let r = knob(
+                                            ui, &mut v, 0.0, 100.0, 40.0,
+                                            theme::accent(), 100.0,
+                                            |x| format!("{}", x as i32),
+                                        );
+                                        if v != self.scene_vol || r.committed.is_some() {
+                                            self.scene_vol = v;
+                                            changed = true;
                                         }
-                                        p.line_segment(
-                                            [
-                                                Pos2::new(scene_r.center().x, bus_y),
-                                                Pos2::new(noise_r.center().x, bus_y),
-                                            ],
-                                            st,
+                                        scene_r = r.rect;
+                                        Self::caption(ui, "SCENE");
+                                    });
+                                    ui.add_space(4.0);
+                                    ui.horizontal(|ui| {
+                                        let mut v = self.noise_vol;
+                                        let r = knob(
+                                            ui, &mut v, 0.0, 100.0, 40.0,
+                                            theme::accent(), 100.0,
+                                            |x| format!("{}", x as i32),
                                         );
-                                        p.line_segment(
-                                            [
-                                                Pos2::new(mid, bus_y),
-                                                Pos2::new(master_r.center().x, master_r.top()),
-                                            ],
-                                            st,
-                                        );
+                                        if v != self.noise_vol || r.committed.is_some() {
+                                            self.noise_vol = v;
+                                            changed = true;
+                                        }
+                                        noise_r = r.rect;
+                                        Self::caption(ui, "NOISE");
+                                    });
+                                });
+                                ui.add_space(22.0); // room for the brace
+                                ui.vertical(|ui| {
+                                    // Centre the output on the two buses, so
+                                    // the brace meets it at its middle.
+                                    ui.add_space(16.0);
+                                    let mut v = self.volume;
+                                    let r = knob(
+                                        ui, &mut v, 0.0, 100.0, 56.0,
+                                        theme::green(), 60.0,
+                                        |x| format!("{}", x as i32),
+                                    );
+                                    if v != self.volume || r.committed.is_some() {
+                                        self.volume = v;
+                                        changed = true;
                                     }
+                                    out_r = r.rect;
+                                    Self::caption(ui, "VOLUME");
+                                });
+                                ui.add_space(10.0);
+                                ui.vertical(|ui| {
+                                    ui.add_space(12.0);
+                                    // A switch, not a button: it shows what the
+                                    // sound is *doing*, rather than naming the
+                                    // action you'd take next.
+                                    let mut on = self.sound_on;
+                                    if toggle(ui, egui::Id::new("sound_sw"), &mut on) {
+                                        self.sound_on = on;
+                                        self.audio.set_enabled(on);
+                                        self.save_settings();
+                                    }
+                                    Self::caption(ui, "SCENE AUDIO");
                                 });
                             });
+                            if changed {
+                                self.apply_audio_gains();
+                                self.save_settings();
+                            }
+                            // the brace: both buses joined, feeding the output
+                            if out_r != Rect::NOTHING {
+                                let st =
+                                    Stroke::new(1.5, theme::caption().gamma_multiply(0.55));
+                                // Just the bar and the run into the output: the
+                                // captions sit to the right of each knob, so
+                                // stubs from the knobs would strike through
+                                // the text.
+                                let bx = out_r.left() - 13.0;
+                                let p = ui.painter();
+                                p.line_segment(
+                                    [
+                                        Pos2::new(bx, scene_r.center().y),
+                                        Pos2::new(bx, noise_r.center().y),
+                                    ],
+                                    st,
+                                );
+                                p.line_segment(
+                                    [
+                                        Pos2::new(bx, out_r.center().y),
+                                        Pos2::new(out_r.left() - 1.0, out_r.center().y),
+                                    ],
+                                    st,
+                                );
+                            }
                         });
                         });
                         // hairline between the light and sound halves
@@ -1929,11 +1954,13 @@ impl eframe::App for VesperApp {
                                     {
                                         self.noise.apply_scene(ns);
                                         self.noise_scene = Some(i);
+                                        self.save_settings();
                                     }
                                 }
                                 if self.pill(ui, "Clear", false).clicked() {
                                     self.noise.clear();
                                     self.noise_scene = None;
+                                    self.save_settings();
                                 }
                             });
                             ui.add_space(10.0);
@@ -1965,6 +1992,7 @@ impl eframe::App for VesperApp {
                                                 // It's their mix now, not the
                                                 // scene's.
                                                 self.noise_scene = None;
+                                                self.save_settings();
                                             }
                                             Self::caption(ui, k.label());
                                         });
@@ -2363,6 +2391,7 @@ impl eframe::App for VesperApp {
 
 impl Drop for VesperApp {
     fn drop(&mut self) {
+        self.save_settings();
         self.driver.stop_current();
         self.audio.stop();
         self.noise.stop();
@@ -2383,7 +2412,7 @@ fn main() -> eframe::Result<()> {
     // Task Scheduler entries run, so schedules fire without the GUI open.
     if args.get(1).map(String::as_str) == Some("--apply") {
         let name = args.get(2).cloned().unwrap_or_default();
-        let ctrl = Controller::new(&root);
+        let ctrl = Controller::new(&config::dir());
         let lights = ctrl.discover();
         if name.eq_ignore_ascii_case("All Off") || name.eq_ignore_ascii_case("off") {
             for l in &lights {
@@ -2392,7 +2421,7 @@ fn main() -> eframe::Result<()> {
         } else if let Some(sc) = SCENES.iter().find(|s| s.name == name) {
             apply_scene(&ctrl, &lights, sc, true);
         } else if let Some(cs) =
-            custom::load(&root.join("custom_scenes.json")).iter().find(|c| c.name == name)
+            custom::load(&config::file("custom_scenes.json")).iter().find(|c| c.name == name)
         {
             custom::apply(&ctrl, &lights, cs, true);
         }
@@ -2471,7 +2500,7 @@ fn main() -> eframe::Result<()> {
     // Headless check of "add by IP": `vesper.exe --probe <ip> [out.txt]`.
     if args.get(1).map(String::as_str) == Some("--probe") {
         let ip = args.get(2).cloned().unwrap_or_default();
-        let ctrl = Controller::new(&root);
+        let ctrl = Controller::new(&config::dir());
         let t = Instant::now();
         let found = ctrl.add_by_ip(&ip);
         let out = match &found {
@@ -2558,7 +2587,7 @@ fn main() -> eframe::Result<()> {
     }
 
     if args.get(1).map(String::as_str) == Some("--discover") {
-        let ctrl = Controller::new(&root);
+        let ctrl = Controller::new(&config::dir());
         let start = Instant::now();
         let lights = ctrl.discover();
         let mut out = format!(
