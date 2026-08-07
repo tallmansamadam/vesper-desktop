@@ -2233,6 +2233,12 @@ impl eframe::App for VesperApp {
                             let r = self.pill(ui, "Strobe",
                                 self.driver.mode == Some(Mode::Strobe));
                             if r.clicked() { acts.push(Act::Motion(Mode::Strobe)); }
+                            let r = self.pill(ui, "Chase",
+                                self.driver.mode == Some(Mode::Chase));
+                            if r.clicked() { acts.push(Act::Motion(Mode::Chase)); }
+                            let r = self.pill(ui, "Twinkle",
+                                self.driver.mode == Some(Mode::Twinkle));
+                            if r.clicked() { acts.push(Act::Motion(Mode::Twinkle)); }
                         });
                         ui.add_space(12.0); // room for the connectors
                         let mid_x = (breathe_rect.center().x + flow_rect.center().x) * 0.5;

@@ -20,6 +20,8 @@ pub enum Mode {
     Breathe,
     Flow,
     Undulate,
+    Chase,
+    Twinkle,
     Flicker,
     Strobe,
     Complement,
@@ -33,6 +35,8 @@ impl Mode {
             Mode::Breathe => "Breathe",
             Mode::Flow => "Flow",
             Mode::Undulate => "Undulate",
+            Mode::Chase => "Chase",
+            Mode::Twinkle => "Twinkle",
             Mode::Flicker => "Flicker",
             Mode::Strobe => "Strobe",
             Mode::Complement => "Complement",
@@ -44,7 +48,8 @@ impl Mode {
     fn fps(self) -> f32 {
         match self {
             Mode::Music => 20.0,
-            Mode::Flicker | Mode::Strobe | Mode::Complement | Mode::Augment => 12.0,
+            Mode::Flicker | Mode::Strobe | Mode::Chase | Mode::Complement
+            | Mode::Augment => 12.0,
             _ => 10.0,
         }
     }
@@ -137,6 +142,40 @@ fn frame(mode: Mode, ctrl: &Controller, lights: &[Arc<Light>], t: f32, st: &mut 
                 let phase = 2.0 * std::f32::consts::PI * t / 6.0 - i as f32 * 0.9;
                 let m = floor + (1.0 - floor) * (0.5 - 0.5 * phase.cos());
                 ctrl.stream_color(l, c[0], c[1], (c[2] as f32 * m) as u16, c[3], 280);
+            }
+        }
+        Mode::Chase => {
+            // A bright bulb travels the row, the rest held low. Distance is
+            // measured the short way round so it wraps rather than snapping
+            // back at the end.
+            let n = lights.len();
+            if n == 0 {
+                return;
+            }
+            let pos = (t * 2.0) % n as f32;
+            for (i, l) in lights.iter().enumerate() {
+                if let Some(&[h, s, b, k]) = st.base.get(&l.id) {
+                    let d = (i as f32 - pos).abs();
+                    let dist = d.min(n as f32 - d);
+                    let m = if dist < 1.0 { 1.0 - 0.85 * dist } else { 0.15 };
+                    ctrl.stream_color(l, h, s, (b as f32 * m) as u16, k, 170);
+                }
+            }
+        }
+        Mode::Twinkle => {
+            // Each bulb swells on its own slow cycle. The golden angle keeps
+            // the phases from lining up, and squaring the wave makes it linger
+            // dim and brighten briefly - a sparkle, not a pulse. Never reaches
+            // black, so it stays usable as room light.
+            for (i, l) in lights.iter().enumerate() {
+                if let Some(&[h, s, b, k]) = st.base.get(&l.id) {
+                    let phase = i as f32 * 2.399963;
+                    let rate = 0.55 + 0.25 * ((i * 7919) % 13) as f32 / 13.0;
+                    let w = 0.5
+                        + 0.5 * (2.0 * std::f32::consts::PI * t * rate + phase).sin();
+                    let m = 0.45 + 0.55 * (w * w);
+                    ctrl.stream_color(l, h, s, (b as f32 * m) as u16, k, 320);
+                }
             }
         }
         Mode::Flicker => {
