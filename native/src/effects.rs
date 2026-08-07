@@ -60,6 +60,9 @@ struct FxState {
     music: Arc<AtomicU32>,
     music_tone: Arc<AtomicU32>,
     hue_swing: f32,
+    /// Undulate's brightness floor, as a fraction of the scene's own max
+    /// (x1000, live-adjustable via the SWING knob).
+    brightness_swing: Arc<AtomicU32>,
 }
 
 fn hsbk_f(h: f32, s: f32, v: f32) -> [u16; 4] {
@@ -114,7 +117,9 @@ fn frame(mode: Mode, ctrl: &Controller, lights: &[Arc<Light>], t: f32, st: &mut 
         Mode::Undulate => {
             // Flow's drifting colour + breathe's brightness envelope, with the
             // breath phase-shifted per bulb so the swell rolls across the
-            // lights like a wave rather than pulsing them in unison.
+            // lights like a wave rather than pulsing them in unison. Swings
+            // between the scene's own max and a floor set by the SWING knob
+            // (e.g. 65% means it breathes between 100% and 65% of max).
             let palette: Vec<[u16; 4]> = lights
                 .iter()
                 .filter_map(|l| st.base.get(&l.id).copied())
@@ -123,12 +128,14 @@ fn frame(mode: Mode, ctrl: &Controller, lights: &[Arc<Light>], t: f32, st: &mut 
             if n == 0 {
                 return;
             }
+            let floor = (st.brightness_swing.load(Ordering::Relaxed) as f32 / 1000.0)
+                .clamp(0.0, 1.0);
             for (i, l) in lights.iter().enumerate() {
                 let p = t * 0.2 + i as f32;
                 let i0 = (p as usize) % n;
                 let c = lerp_hsbk(palette[i0], palette[(i0 + 1) % n], p.fract());
                 let phase = 2.0 * std::f32::consts::PI * t / 6.0 - i as f32 * 0.9;
-                let m = 0.12 + 0.88 * (0.5 - 0.5 * phase.cos());
+                let m = floor + (1.0 - floor) * (0.5 - 0.5 * phase.cos());
                 ctrl.stream_color(l, c[0], c[1], (c[2] as f32 * m) as u16, c[3], 280);
             }
         }
@@ -261,6 +268,9 @@ pub struct Driver {
     thread: Option<JoinHandle<()>>,
     /// Speed multiplier x1000, shared with the running thread.
     pub speed_milli: Arc<AtomicU32>,
+    /// Undulate's brightness floor (fraction of scene max, x1000), shared
+    /// with the running thread so the SWING knob applies live.
+    pub swing_milli: Arc<AtomicU32>,
     /// Music loudness envelope (0..1000), written by the audio capture.
     music_level: Arc<AtomicU32>,
     /// Music spectral balance (0 = bass .. 1000 = treble).
@@ -274,6 +284,7 @@ impl Driver {
             stop: Arc::new(AtomicBool::new(false)),
             thread: None,
             speed_milli: Arc::new(AtomicU32::new(1000)),
+            swing_milli: Arc::new(AtomicU32::new(650)),
             music_level,
             music_tone,
         }
@@ -289,6 +300,7 @@ impl Driver {
         let stop = Arc::new(AtomicBool::new(false));
         self.stop = stop.clone();
         let speed = self.speed_milli.clone();
+        let swing = self.swing_milli.clone();
         let music = self.music_level.clone();
         let music_tone = self.music_tone.clone();
         self.mode = Some(mode);
@@ -304,6 +316,7 @@ impl Driver {
                 music,
                 music_tone,
                 hue_swing: 0.0,
+                brightness_swing: swing,
             };
             let mut prev = Instant::now();
             let mut et = 0.0f32; // speed-scaled "effect time"

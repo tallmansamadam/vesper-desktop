@@ -321,6 +321,8 @@ struct VesperApp {
     scene_vol: f32,
     noise_vol: f32,
     speed_ui: f32,
+    /// Undulate's brightness swing floor, as a percent of scene max.
+    swing_ui: f32,
     driver: Driver,
     audio: Ambience,
     music: music::Music,
@@ -426,6 +428,7 @@ impl VesperApp {
             scene_vol: saved.scene_vol,
             noise_vol: saved.noise_vol,
             speed_ui: saved.speed,
+            swing_ui: saved.swing,
             driver: Driver::new(music.level_handle(), music.tone_handle()),
             audio: Ambience::new(root.join("audio")),
             music,
@@ -474,6 +477,10 @@ impl VesperApp {
         app.apply_audio_gains();
         app.driver.speed_milli.store(
             (app.speed_ui * 10.0) as u32,
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        app.driver.swing_milli.store(
+            (app.swing_ui * 10.0) as u32,
             std::sync::atomic::Ordering::Relaxed,
         );
         app.spawn_discover(&cc.egui_ctx);
@@ -527,6 +534,7 @@ impl VesperApp {
         s.noise_vol = self.noise_vol;
         s.sound_on = self.sound_on;
         s.speed = self.speed_ui;
+        s.swing = self.swing_ui;
         s.timer_hour = self.timer_hour;
         s.timer_min = self.timer_min;
         s.wake_hour = self.wake_hour;
@@ -2186,6 +2194,21 @@ impl eframe::App for VesperApp {
                                 .store((sp * 10.0) as u32, std::sync::atomic::Ordering::Relaxed);
                         }
                         Self::caption(ui, "SPEED");
+                    });
+                    ui.add_space(10.0);
+                    ui.vertical(|ui| {
+                        let mut sw = self.swing_ui;
+                        let res = knob(
+                            ui, &mut sw, 0.0, 100.0, 56.0, theme::accent(), 65.0,
+                            |v| format!("{:.0}%", v),
+                        );
+                        if sw != self.swing_ui || res.committed.is_some() {
+                            self.swing_ui = sw;
+                            self.driver
+                                .swing_milli
+                                .store((sw * 10.0) as u32, std::sync::atomic::Ordering::Relaxed);
+                        }
+                        Self::caption(ui, "SWING");
                     });
                     ui.add_space(10.0);
                     ui.vertical(|ui| {

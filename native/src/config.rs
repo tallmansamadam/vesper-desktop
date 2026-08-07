@@ -80,6 +80,9 @@ pub struct Settings {
     pub noise_vol: f32,
     pub sound_on: bool,
     pub speed: f32,
+    /// Undulate's brightness floor as a percent of scene max (e.g. 65 means
+    /// it breathes between 100% and 65%).
+    pub swing: f32,
     pub timer_hour: f32,
     pub timer_min: f32,
     pub wake_hour: f32,
@@ -99,6 +102,7 @@ impl Default for Settings {
             noise_vol: 100.0,
             sound_on: true,
             speed: 100.0,
+            swing: 65.0,
             timer_hour: 23.0,
             timer_min: 0.0,
             wake_hour: 7.0,
@@ -140,6 +144,7 @@ impl Settings {
         s.noise_vol = f(&v, "noise_vol", s.noise_vol);
         s.sound_on = v.get("sound_on").and_then(Value::as_bool).unwrap_or(true);
         s.speed = f(&v, "speed", s.speed);
+        s.swing = f(&v, "swing", s.swing);
         s.timer_hour = f(&v, "timer_hour", s.timer_hour);
         s.timer_min = f(&v, "timer_min", s.timer_min);
         s.wake_hour = f(&v, "wake_hour", s.wake_hour);
@@ -166,6 +171,7 @@ impl Settings {
             "noise_vol": self.noise_vol,
             "sound_on": self.sound_on,
             "speed": self.speed,
+            "swing": self.swing,
             "timer_hour": self.timer_hour,
             "timer_min": self.timer_min,
             "wake_hour": self.wake_hour,
