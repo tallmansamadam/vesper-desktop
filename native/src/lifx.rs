@@ -159,17 +159,22 @@ impl LifxLan {
 
     /// Ask a specific address whether it's a LIFX device, returning its serial.
     /// Used by "add by IP" when broadcast discovery can't reach it (other
-    /// subnet, AP isolation, VPN).
+    /// subnet, AP isolation, VPN), and to reconnect remembered bulbs.
+    ///
+    /// Uses its own socket rather than the shared command one: a bulb that's
+    /// switched off costs the full timeout, and holding the command lock for
+    /// that long would stall every power/colour change meanwhile.
     pub fn probe_target(&self, ip: &str) -> Option<u64> {
         let seq = self.next_seq();
         let pkt = make_packet(MSG_GET_SERVICE, &[], 0, false, true, false, seq);
-        let _guard = self.rx.lock().unwrap();
+        let sock = UdpSocket::bind("0.0.0.0:0").ok()?;
+        sock.set_read_timeout(Some(Duration::from_millis(200))).ok()?;
         let mut buf = [0u8; 1024];
         for _ in 0..2 {
-            let _ = self.sock.send_to(&pkt, (ip, PORT));
+            let _ = sock.send_to(&pkt, (ip, PORT));
             let deadline = Instant::now() + Duration::from_millis(700);
             while Instant::now() < deadline {
-                match self.sock.recv_from(&mut buf) {
+                match sock.recv_from(&mut buf) {
                     Ok((n, addr)) => {
                         if addr.ip().to_string() == ip {
                             if let Some((target, _s, m)) = parse_header(&buf[..n]) {

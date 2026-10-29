@@ -67,6 +67,9 @@ enum Msg {
     /// still running.
     Known(Vec<Arc<Light>>),
     Discovered(Vec<Arc<Light>>),
+    /// Lights the background watcher found that weren't listed: remembered
+    /// bulbs switched back on, or new ones.
+    Rejoined(Vec<Arc<Light>>),
     Refresh,
     Texture(&'static str, TextureHandle),
     PlayAmbience(&'static str),
@@ -488,6 +491,7 @@ impl VesperApp {
             std::sync::atomic::Ordering::Relaxed,
         );
         app.spawn_discover(&cc.egui_ctx);
+        app.spawn_rejoin_watcher(&cc.egui_ctx);
         app
     }
 
@@ -646,6 +650,34 @@ impl VesperApp {
             let lights = ctrl.discover();
             let _ = tx.send(Msg::Discovered(lights));
             ctx.request_repaint();
+        });
+    }
+
+    /// Keep looking for lights that aren't listed, for the life of the app
+    /// (tray included): every 10 s, remembered bulbs are asked directly at
+    /// their saved address, and every 2 min a full discovery runs for new
+    /// ones or changed addresses. A bulb switched back on at the wall
+    /// rejoins by itself, without anyone pressing Discover.
+    fn spawn_rejoin_watcher(&self, ctx: &egui::Context) {
+        let ctrl = self.ctrl.clone();
+        let tx = self.tx.clone();
+        let ctx = ctx.clone();
+        let shared = self.shared_lights.clone();
+        std::thread::spawn(move || {
+            let mut tick = 0u32;
+            loop {
+                std::thread::sleep(Duration::from_secs(10));
+                tick += 1;
+                let listed: Vec<String> = shared
+                    .lock()
+                    .map(|v| v.iter().map(|l| l.id.clone()).collect())
+                    .unwrap_or_default();
+                let back = rejoin_pass(&ctrl, &listed, tick % 12 == 0);
+                if !back.is_empty() {
+                    let _ = tx.send(Msg::Rejoined(back));
+                    ctx.request_repaint();
+                }
+            }
         });
     }
 
@@ -1021,6 +1053,19 @@ impl VesperApp {
                         format!(
                             "Reconnected to {n} light{} — looking for new ones …",
                             if n == 1 { "" } else { "s" }
+                        ),
+                        false,
+                    );
+                }
+                Msg::Rejoined(lights) => {
+                    let names: Vec<String> = lights.iter().map(|l| l.label()).collect();
+                    self.set_lights(lights);
+                    known::remember(&self.lights);
+                    self.set_status(
+                        format!(
+                            "{} {} back.",
+                            names.join(", "),
+                            if names.len() == 1 { "is" } else { "are" }
                         ),
                         false,
                     );
@@ -2463,6 +2508,26 @@ impl Drop for VesperApp {
     }
 }
 
+/// One pass of the rejoin watcher: remembered lights not in `listed` that
+/// now answer, plus (when `full`) anything new a discovery turns up.
+fn rejoin_pass(ctrl: &Controller, listed: &[String], full: bool) -> Vec<Arc<Light>> {
+    let missing: Vec<known::Known> = known::load()
+        .into_iter()
+        .filter(|k| !listed.contains(&k.id))
+        .collect();
+    let mut back = if missing.is_empty() {
+        Vec::new()
+    } else {
+        ctrl.reconnect(&missing)
+    };
+    if full {
+        back = merge(back, ctrl.discover());
+    }
+    // A listed bulb may now hold a missing one's old address.
+    back.retain(|l| !listed.contains(&l.id));
+    back
+}
+
 fn main() -> eframe::Result<()> {
     let root = util::assets_root();
 
@@ -2647,6 +2712,47 @@ fn main() -> eframe::Result<()> {
         n.stop();
         let path = args.get(2).cloned().unwrap_or_else(|| "mixcheck.txt".into());
         let _ = std::fs::write(path, report);
+        return Ok(());
+    }
+
+    // Headless check of the rejoin watcher: `vesper.exe --rejoin [out.txt]`.
+    // Treats the first answering remembered light as "missing" and checks a
+    // watcher pass brings it back - while timing a confirmed command to
+    // another bulb, which must not stall behind probes of bulbs that are off.
+    if args.get(1).map(String::as_str) == Some("--rejoin") {
+        let ctrl = Controller::new(&config::dir());
+        let live = ctrl.reconnect(&known::load());
+        let mut out = format!("{} remembered light(s) answering\n", live.len());
+        if let Some((gone, rest)) = live.split_first() {
+            let listed: Vec<String> = rest.iter().map(|l| l.id.clone()).collect();
+            let (back, took, cmd) = std::thread::scope(|s| {
+                let pass = s.spawn(|| {
+                    let t = Instant::now();
+                    let b = rejoin_pass(&ctrl, &listed, false);
+                    (b, t.elapsed())
+                });
+                // Give the pass time to start probing, then send a command.
+                std::thread::sleep(Duration::from_millis(50));
+                let cmd = rest.first().map(|l| {
+                    let t = Instant::now();
+                    let ok = ctrl.lifx.ping_ack(l);
+                    (l.label(), ok, t.elapsed())
+                });
+                let (b, took) = pass.join().unwrap();
+                (b, took, cmd)
+            });
+            out.push_str(&format!(
+                "pretended '{}' was missing; pass took {:?} and returned [{}]\n",
+                gone.label(),
+                took,
+                back.iter().map(|l| l.label()).collect::<Vec<_>>().join(", ")
+            ));
+            if let Some((name, ok, t)) = cmd {
+                out.push_str(&format!("command to '{name}' during the pass: ack={ok} in {t:?}\n"));
+            }
+        }
+        let path = args.get(2).cloned().unwrap_or_else(|| "rejoin.txt".into());
+        let _ = std::fs::write(path, out);
         return Ok(());
     }
 
