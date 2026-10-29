@@ -15,6 +15,7 @@ mod effects;
 mod govee;
 mod hue;
 mod knob;
+mod known;
 mod lifx;
 mod light;
 mod music;
@@ -47,7 +48,7 @@ use egui::{
 
 use crate::ambience::Ambience;
 use crate::color::hsbk_to_rgb;
-use crate::controller::Controller;
+use crate::controller::{merge, sort_lights, Controller};
 use crate::effects::{Driver, Mode};
 use crate::knob::{knob, toggle};
 use crate::light::Light;
@@ -62,6 +63,9 @@ const TILE_H: f32 = 84.0;
 
 enum Msg {
     Status(String, bool),
+    /// Remembered lights that answered at their saved address; discovery is
+    /// still running.
+    Known(Vec<Arc<Light>>),
     Discovered(Vec<Arc<Light>>),
     Refresh,
     Texture(&'static str, TextureHandle),
@@ -625,7 +629,20 @@ impl VesperApp {
         let ctrl = self.ctrl.clone();
         let tx = self.tx.clone();
         let ctx = ctx.clone();
+        // Only reconnect on the first pass: once lights are listed, a
+        // Discover click is just looking for more.
+        let reconnect = self.lights.is_empty();
         std::thread::spawn(move || {
+            if reconnect {
+                let known = known::load();
+                if !known.is_empty() {
+                    let lights = ctrl.reconnect(&known);
+                    if !lights.is_empty() {
+                        let _ = tx.send(Msg::Known(lights));
+                        ctx.request_repaint();
+                    }
+                }
+            }
             let lights = ctrl.discover();
             let _ = tx.send(Msg::Discovered(lights));
             ctx.request_repaint();
@@ -979,6 +996,16 @@ impl VesperApp {
         }
     }
 
+    /// Merge `found` into the listed lights (`found` wins on a shared id, as
+    /// it has the current address) and publish to the tray.
+    fn set_lights(&mut self, found: Vec<Arc<Light>>) {
+        self.lights = merge(found, std::mem::take(&mut self.lights));
+        if let Ok(mut shared) = self.shared_lights.lock() {
+            shared.clone_from(&self.lights);
+        }
+        self.sync_from_lights();
+    }
+
     fn drain_messages(&mut self, ctx: &egui::Context) {
         while let Ok(msg) = self.rx.try_recv() {
             match msg {
@@ -987,13 +1014,23 @@ impl VesperApp {
                         self.set_status(s, e);
                     }
                 }
+                Msg::Known(lights) => {
+                    self.set_lights(lights);
+                    let n = self.lights.len();
+                    self.set_status(
+                        format!(
+                            "Reconnected to {n} light{} — looking for new ones …",
+                            if n == 1 { "" } else { "s" }
+                        ),
+                        false,
+                    );
+                }
                 Msg::Discovered(lights) => {
                     self.discovering = false;
-                    self.lights = lights;
-                    if let Ok(mut shared) = self.shared_lights.lock() {
-                        shared.clone_from(&self.lights);
-                    }
-                    self.sync_from_lights();
+                    // Keep lights already listed that this pass missed - a
+                    // dropped broadcast reply shouldn't make a bulb vanish.
+                    self.set_lights(lights);
+                    known::remember(&self.lights);
                     if self.lights.is_empty() {
                         self.set_status("No lights found.", true);
                     } else {
@@ -1021,13 +1058,11 @@ impl VesperApp {
                 Msg::AddLight(l) => {
                     if !self.lights.iter().any(|x| x.id == l.id) {
                         self.lights.push(l);
-                        self.lights.sort_by(|a, b| {
-                            (a.vendor.name(), a.label().to_lowercase())
-                                .cmp(&(b.vendor.name(), b.label().to_lowercase()))
-                        });
+                        sort_lights(&mut self.lights);
                         if let Ok(mut shared) = self.shared_lights.lock() {
                             shared.clone_from(&self.lights);
                         }
+                        known::remember(&self.lights);
                         self.manual_ip.clear();
                         self.sync_from_lights();
                     }
@@ -2442,7 +2477,7 @@ fn main() -> eframe::Result<()> {
     if args.get(1).map(String::as_str) == Some("--apply") {
         let name = args.get(2).cloned().unwrap_or_default();
         let ctrl = Controller::new(&config::dir());
-        let lights = ctrl.discover();
+        let lights = ctrl.discover_with_known(&known::load());
         if name.eq_ignore_ascii_case("All Off") || name.eq_ignore_ascii_case("off") {
             for l in &lights {
                 ctrl.set_power(l, false, 400);
@@ -2617,11 +2652,19 @@ fn main() -> eframe::Result<()> {
 
     if args.get(1).map(String::as_str) == Some("--discover") {
         let ctrl = Controller::new(&config::dir());
+        let known = known::load();
+        let start = Instant::now();
+        let back = ctrl.reconnect(&known);
+        let reconnect_took = start.elapsed();
         let start = Instant::now();
         let lights = ctrl.discover();
         let mut out = format!(
-            "assets_root: {}\ndiscovered {} light(s) in {:?}\n",
+            "assets_root: {}\nreconnected {} of {} remembered light(s) in {:?}\n\
+             discovered {} light(s) in {:?}\n",
             root.display(),
+            back.len(),
+            known.len(),
+            reconnect_took,
             lights.len(),
             start.elapsed()
         );

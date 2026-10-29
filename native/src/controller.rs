@@ -7,11 +7,30 @@ use std::sync::Arc;
 
 use crate::govee::Govee;
 use crate::hue::Hue;
+use crate::known::Known;
 use crate::lifx::LifxLan;
 use crate::light::{Light, Vendor};
 use crate::nanoleaf::Nanoleaf;
 use crate::wiz::Wiz;
 use crate::yeelight::Yeelight;
+
+pub fn sort_lights(v: &mut [Arc<Light>]) {
+    v.sort_by(|a, b| {
+        (a.vendor.name(), a.label().to_lowercase())
+            .cmp(&(b.vendor.name(), b.label().to_lowercase()))
+    });
+}
+
+/// `primary` plus anything in `extra` it doesn't already have (by id).
+pub fn merge(mut primary: Vec<Arc<Light>>, extra: Vec<Arc<Light>>) -> Vec<Arc<Light>> {
+    for l in extra {
+        if !primary.iter().any(|x| x.id == l.id) {
+            primary.push(l);
+        }
+    }
+    sort_lights(&mut primary);
+    primary
+}
 
 pub struct Controller {
     pub lifx: LifxLan,
@@ -51,10 +70,7 @@ impl Controller {
                 }
             }
         });
-        all.sort_by(|a, b| {
-            (a.vendor.name(), a.label().to_lowercase())
-                .cmp(&(b.vendor.name(), b.label().to_lowercase()))
-        });
+        sort_lights(&mut all);
         all
     }
 
@@ -144,6 +160,53 @@ impl Controller {
             return Some(l);
         }
         self.govee.probe(ip)
+    }
+
+    /// Reconnect to remembered lights by address, in parallel. Each is asked
+    /// only as its own brand, so a bulb that's off costs one short timeout
+    /// rather than a probe of every vendor. Whatever answers at the address
+    /// is kept, even if it's a different device of that brand now.
+    pub fn reconnect(&self, known: &[Known]) -> Vec<Arc<Light>> {
+        let mut out: Vec<Arc<Light>> = Vec::new();
+        std::thread::scope(|s| {
+            let hs: Vec<_> = known
+                .iter()
+                .map(|k| {
+                    s.spawn(move || match k.vendor {
+                        Vendor::Lifx => self.lifx.probe_target(&k.ip).map(|t| {
+                            let l = self.lifx.light_for(&k.ip, t);
+                            l.set_label(&k.label);
+                            self.lifx.refresh(&l);
+                            l
+                        }),
+                        Vendor::Wiz => self.wiz.probe(&k.ip),
+                        Vendor::Yeelight => self.yeelight.probe(&k.ip),
+                        Vendor::Govee => self.govee.probe(&k.ip),
+                        Vendor::Hue | Vendor::Nanoleaf => None,
+                    })
+                })
+                .collect();
+            for h in hs {
+                if let Ok(Some(l)) = h.join() {
+                    if !out.iter().any(|x| x.id == l.id) {
+                        out.push(l);
+                    }
+                }
+            }
+        });
+        sort_lights(&mut out);
+        out
+    }
+
+    /// Remembered lights plus a full discovery, merged (discovery wins, since
+    /// it has the current address). Used by the headless modes.
+    pub fn discover_with_known(&self, known: &[Known]) -> Vec<Arc<Light>> {
+        let (seen, found) = std::thread::scope(|s| {
+            let a = s.spawn(|| self.reconnect(known));
+            let b = s.spawn(|| self.discover());
+            (a.join().unwrap_or_default(), b.join().unwrap_or_default())
+        });
+        merge(found, seen)
     }
 
     pub fn set_rgb(&self, l: &Light, r: u8, g: u8, b: u8, d: u32) {

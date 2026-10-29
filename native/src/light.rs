@@ -27,6 +27,19 @@ impl Vendor {
             Vendor::Yeelight => "Yeelight",
         }
     }
+
+    pub fn from_name(s: &str) -> Option<Vendor> {
+        [
+            Vendor::Govee,
+            Vendor::Hue,
+            Vendor::Lifx,
+            Vendor::Nanoleaf,
+            Vendor::Wiz,
+            Vendor::Yeelight,
+        ]
+        .into_iter()
+        .find(|v| v.name() == s)
+    }
 }
 
 pub struct Light {

@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::light::{Light, Vendor};
-use crate::util::{directed_broadcast, local_ipv4s};
+use crate::util::{directed_broadcast, local_ipv4s, recv_until};
 
 const PORT: u16 = 56700;
 const MSG_GET_SERVICE: u16 = 2;
@@ -99,49 +99,43 @@ impl LifxLan {
         let rounds = 3;
 
         // One broadcast socket per interface + its destinations.
-        let mut socks: Vec<(UdpSocket, Vec<String>)> = Vec::new();
+        let mut socks: Vec<UdpSocket> = Vec::new();
+        let mut dests: Vec<Vec<String>> = Vec::new();
         for ip in local_ipv4s() {
             if let Ok(s) = UdpSocket::bind((ip, 0)) {
                 let _ = s.set_broadcast(true);
-                let _ = s.set_read_timeout(Some(Duration::from_millis(100)));
-                let dests = vec![
+                dests.push(vec![
                     directed_broadcast(ip).to_string(),
                     "255.255.255.255".to_string(),
-                ];
-                socks.push((s, dests));
+                ]);
+                socks.push(s);
             }
         }
         if socks.is_empty() {
             if let Ok(s) = UdpSocket::bind("0.0.0.0:0") {
                 let _ = s.set_broadcast(true);
-                let _ = s.set_read_timeout(Some(Duration::from_millis(100)));
-                socks.push((s, vec!["255.255.255.255".to_string()]));
+                dests.push(vec!["255.255.255.255".to_string()]);
+                socks.push(s);
             }
         }
 
         let mut found: HashMap<u64, String> = HashMap::new();
-        let mut buf = [0u8; 1024];
         for _ in 0..rounds {
-            for (s, dests) in &socks {
+            for (s, ds) in socks.iter().zip(&dests) {
                 let pkt = make_packet(
                     MSG_GET_SERVICE, &[], 0, true, false, false, self.next_seq(),
                 );
-                for d in dests {
+                for d in ds {
                     let _ = s.send_to(&pkt, (d.as_str(), PORT));
                 }
             }
-            let deadline = Instant::now() + wait;
-            while Instant::now() < deadline {
-                for (s, _) in &socks {
-                    if let Ok((n, addr)) = s.recv_from(&mut buf) {
-                        if let Some((target, _seq, mtype)) = parse_header(&buf[..n]) {
-                            if mtype == MSG_STATE_SERVICE && n >= 41 && buf[36] == 1 {
-                                found.entry(target).or_insert(addr.ip().to_string());
-                            }
-                        }
+            recv_until(&socks, wait, |d, addr| {
+                if let Some((target, _seq, mtype)) = parse_header(d) {
+                    if mtype == MSG_STATE_SERVICE && d.len() >= 41 && d[36] == 1 {
+                        found.entry(target).or_insert(addr.ip().to_string());
                     }
                 }
-            }
+            });
         }
 
         let mut lights = Vec::new();

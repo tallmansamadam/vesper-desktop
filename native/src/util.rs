@@ -42,25 +42,37 @@ pub fn mcast_sender(ip: Ipv4Addr) -> std::io::Result<UdpSocket> {
     Ok(udp)
 }
 
-/// Round-robin receive across several sockets until the deadline, feeding
-/// each datagram to `on_pkt`. The sockets' own short read timeouts throttle
-/// the loop; nothing is lost while another socket is being polled (the OS
-/// buffers it).
+/// Receive across several sockets until the deadline, feeding each datagram
+/// to `on_pkt`. Sockets are switched to non-blocking and drained completely
+/// on every pass: a blocking read with a timeout takes only one datagram per
+/// socket per pass, so with a VPN, Tailscale and a few virtual adapters
+/// (each idle socket burning its whole timeout) most replies were never read
+/// before the deadline.
 pub fn recv_until(
     socks: &[UdpSocket],
     total: Duration,
     mut on_pkt: impl FnMut(&[u8], std::net::SocketAddr),
 ) {
+    if socks.is_empty() {
+        return;
+    }
+    for s in socks {
+        let _ = s.set_nonblocking(true);
+    }
     let deadline = Instant::now() + total;
     let mut buf = [0u8; 4096];
     while Instant::now() < deadline {
+        let mut got = false;
         for s in socks {
-            if let Ok((n, addr)) = s.recv_from(&mut buf) {
+            // Any error (WouldBlock, or Windows' ICMP-triggered ConnReset)
+            // ends this socket's turn; the rest waits in the OS buffer.
+            while let Ok((n, addr)) = s.recv_from(&mut buf) {
+                got = true;
                 on_pkt(&buf[..n], addr);
             }
         }
-        if socks.is_empty() {
-            break;
+        if !got {
+            std::thread::sleep(Duration::from_millis(10));
         }
     }
 }
