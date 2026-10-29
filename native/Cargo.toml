@@ -15,7 +15,10 @@ serde_json = "1"
 if-addrs = "0.13"
 socket2 = "0.5"
 fastrand = "2"
-tray-icon = "0.19"
+# ksni (pure-Rust D-Bus) instead of the default GTK3 backend on Linux: the
+# gtk 0.18 bindings pull in glib 0.18 (GHSA-wrw7-89jp-8q8g) and are
+# unmaintained. No effect on Windows or macOS.
+tray-icon = { version = "0.26", default-features = false, features = ["ksni"] }
 global-hotkey = "0.6"
 cpal = "0.15"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
