@@ -91,6 +91,8 @@ pub struct Settings {
     /// Level per noise layer, and which noise scene is showing (if any).
     pub noise_levels: Vec<f32>,
     pub noise_scene: Option<usize>,
+    /// The first-run "how the dials work" guide has been dismissed.
+    pub knob_guide_seen: bool,
 }
 
 impl Default for Settings {
@@ -110,6 +112,7 @@ impl Default for Settings {
             wake_rise_min: 10.0,
             noise_levels: vec![0.0; noise::N],
             noise_scene: None,
+            knob_guide_seen: false,
         }
     }
 }
@@ -160,6 +163,10 @@ impl Settings {
             .and_then(Value::as_u64)
             .map(|i| i as usize)
             .filter(|i| *i < noise::SCENES.len());
+        s.knob_guide_seen = v
+            .get("knob_guide_seen")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         s
     }
 
@@ -179,6 +186,7 @@ impl Settings {
             "wake_rise_min": self.wake_rise_min,
             "noise_levels": self.noise_levels,
             "noise_scene": self.noise_scene,
+            "knob_guide_seen": self.knob_guide_seen,
         });
         let _ = std::fs::write(
             Settings::path(),

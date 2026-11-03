@@ -1,6 +1,7 @@
 //! Custom widgets: the VST-style rotary knob (270-degree arc, pointer,
-//! digital readout - drag up/down, scroll wheel, double-click to reset) and
-//! the iOS-style sliding toggle. Ported from the Tk canvases in lifx_gui.py.
+//! digital readout - drag up/right or down/left, scroll wheel, double-click
+//! to reset) and the iOS-style sliding toggle. Ported from the Tk canvases in
+//! lifx_gui.py.
 
 use egui::{Align2, Color32, FontId, Pos2, Sense, Shape, Stroke, Ui, Vec2};
 
@@ -15,6 +16,10 @@ pub struct KnobResult {
     pub committed: Option<f32>,
     /// Value nudged by the scroll wheel this frame (caller debounces).
     pub wheeled: bool,
+    /// Moved by dragging this frame.
+    pub dragged: bool,
+    /// Reset to its default by a double-click this frame.
+    pub reset: bool,
     /// Where it landed, for callers that draw connections between knobs.
     pub rect: egui::Rect,
 }
@@ -39,21 +44,59 @@ pub fn knob(
     default_value: f32,
     fmt: impl Fn(f32) -> String,
 ) -> KnobResult {
+    knob_hinted(ui, value, min, max, size, accent, default_value, fmt, true)
+}
+
+/// `knob`, optionally without the how-to tooltip (the dials guide's practice
+/// knob, where the tooltip would cover the instructions it repeats).
+#[allow(clippy::too_many_arguments)]
+pub fn knob_hinted(
+    ui: &mut Ui,
+    value: &mut f32,
+    min: f32,
+    max: f32,
+    size: f32,
+    accent: Color32,
+    default_value: f32,
+    fmt: impl Fn(f32) -> String,
+    hint: bool,
+) -> KnobResult {
     let (rect, response) =
         ui.allocate_exact_size(Vec2::splat(size), Sense::click_and_drag());
     let mut committed = None;
     let mut wheeled = false;
+    let mut dragged = false;
+    let mut reset = false;
     let span = (max - min).max(1e-6);
 
     if response.double_clicked() {
         *value = default_value;
         committed = Some(default_value);
+        reset = true;
     } else if response.dragged() {
-        let delta = -response.drag_delta().y / 200.0 * span; // 200px = range
+        // Up or right raises it. DAW knobs are vertical-only, but people who
+        // haven't used one drag sideways or try to twist it, and a dial that
+        // ignores that feels broken. 200px of travel = the whole range.
+        let d = response.drag_delta();
+        let delta = (d.x - d.y) / 200.0 * span;
         *value = (*value + delta).clamp(min, max);
+        dragged = delta != 0.0;
     } else if response.drag_stopped() {
         committed = Some(*value);
     }
+    if response.dragged() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+    } else if response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+    }
+    let response = if hint {
+        response.on_hover_text(
+            "Drag up or right to raise, down or left to lower.\n\
+             Scroll for small steps. Double-click to reset.",
+        )
+    } else {
+        response
+    };
     if response.hovered() {
         let scroll = ui.input(|i| i.raw_scroll_delta.y);
         if scroll.abs() > 0.0 {
@@ -126,7 +169,13 @@ pub fn knob(
         );
     }
 
-    KnobResult { committed, wheeled, rect }
+    KnobResult {
+        committed,
+        wheeled,
+        dragged,
+        reset,
+        rect,
+    }
 }
 
 /// iOS-style sliding on/off switch. Returns true when the user toggled it.

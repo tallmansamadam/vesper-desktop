@@ -88,6 +88,27 @@ enum Dialog {
     ByIp,
 }
 
+/// The "how the dials work" guide: shown once on first run (and from the
+/// toolbar's "?" after), with a practice dial that ticks off each gesture as
+/// it's tried. People who've never used a DAW try to twist the knobs, or tap
+/// them, and conclude they're broken.
+#[derive(Default)]
+struct KnobGuide {
+    value: f32,
+    dragged: bool,
+    wheeled: bool,
+    reset: bool,
+}
+
+impl KnobGuide {
+    fn new() -> KnobGuide {
+        KnobGuide {
+            value: 30.0,
+            ..Default::default()
+        }
+    }
+}
+
 /// Deferred user intents collected during the UI pass (avoids borrow
 /// tangles) plus wheel-debounced commits.
 enum Act {
@@ -372,6 +393,7 @@ struct VesperApp {
     settings: config::Settings,
     manual_ip: String,
     dialog: Option<Dialog>,
+    knob_guide: Option<KnobGuide>,
     /// Cleared once the window has been placed on-screen (see `place_window`).
     needs_placing: bool,
     layout_logged: bool,
@@ -469,6 +491,7 @@ impl VesperApp {
             settings: saved.clone(),
             manual_ip: String::new(),
             dialog: None,
+            knob_guide: (!saved.knob_guide_seen).then(KnobGuide::new),
             needs_placing: true,
             layout_logged: false,
             intro_start: None,
@@ -1265,6 +1288,147 @@ impl VesperApp {
             });
     }
 
+    /// The dials guide (see `KnobGuide`). Closing it any way - Got it, or
+    /// clicking away - counts as seen, so it never comes back uninvited.
+    fn knob_guide_ui(&mut self, ctx: &egui::Context) {
+        let Some(mut g) = self.knob_guide.take() else { return };
+        let screen = ctx.screen_rect();
+        let mut close = false;
+
+        egui::Area::new(egui::Id::new("guide_scrim"))
+            .order(egui::Order::Middle)
+            .fixed_pos(screen.min)
+            .show(ctx, |ui| {
+                let r = ui.allocate_response(screen.size(), Sense::click());
+                ui.painter()
+                    .rect_filled(screen, Rounding::ZERO, Color32::from_black_alpha(150));
+                if r.clicked() {
+                    close = true;
+                }
+            });
+
+        egui::Area::new(egui::Id::new("guide"))
+            .order(egui::Order::Foreground)
+            .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                let bg = ui.painter().add(egui::Shape::Noop);
+                let frame = egui::Frame::none()
+                    .inner_margin(egui::Margin::same(18.0))
+                    .show(ui, |ui| {
+                        ui.set_width(400.0);
+                        ui.label(
+                            RichText::new("How the dials work")
+                                .size(15.0)
+                                .strong()
+                                .color(theme::text()),
+                        );
+                        ui.add_space(6.0);
+                        ui.label(
+                            RichText::new(
+                                "Vesper's dials don't need twisting. Press on one and slide \
+                                 the mouse (or your finger, on a touchscreen) in a straight \
+                                 line - like a slider you can't see. Try it on this one:",
+                            )
+                            .size(11.0)
+                            .color(theme::muted()),
+                        );
+                        ui.add_space(12.0);
+                        ui.horizontal(|ui| {
+                            ui.add_space(6.0);
+                            let res = knob::knob_hinted(
+                                ui, &mut g.value, 0.0, 100.0, 80.0, theme::accent(), 50.0,
+                                |v| format!("{}%", v as i32), false,
+                            );
+                            g.dragged |= res.dragged;
+                            g.wheeled |= res.wheeled;
+                            g.reset |= res.reset;
+                            ui.add_space(18.0);
+                            ui.vertical(|ui| {
+                                ui.add_space(4.0);
+                                let step = |ui: &mut egui::Ui, done: bool, head: &str, how: &str| {
+                                    ui.horizontal(|ui| {
+                                        let (mark, col) = if done {
+                                            ("✔", theme::green())
+                                        } else {
+                                            ("○", theme::caption())
+                                        };
+                                        ui.label(RichText::new(mark).size(13.0).color(col));
+                                        ui.vertical(|ui| {
+                                            ui.label(
+                                                RichText::new(head)
+                                                    .size(11.5)
+                                                    .strong()
+                                                    .color(theme::text()),
+                                            );
+                                            ui.label(
+                                                RichText::new(how).size(10.0).color(theme::muted()),
+                                            );
+                                        });
+                                    });
+                                    ui.add_space(6.0);
+                                };
+                                step(
+                                    ui,
+                                    g.dragged,
+                                    "Press and slide",
+                                    "Up or right turns it up; down or left turns it down.",
+                                );
+                                step(
+                                    ui,
+                                    g.wheeled,
+                                    "Scroll for fine control",
+                                    "Point at a dial and roll the mouse wheel.",
+                                );
+                                step(
+                                    ui,
+                                    g.reset,
+                                    "Double-click to reset",
+                                    "Puts the dial back to its usual setting.",
+                                );
+                            });
+                        });
+                        ui.add_space(6.0);
+                        ui.label(
+                            RichText::new(
+                                "The number in the middle is the current setting. \
+                                 Changes reach the lights when you let go.",
+                            )
+                            .size(10.0)
+                            .color(theme::caption()),
+                        );
+                        ui.add_space(14.0);
+                        ui.horizontal(|ui| {
+                            let all = g.dragged && g.wheeled && g.reset;
+                            if self.pill(ui, "Got it", all).clicked() {
+                                close = true;
+                            }
+                            if !all {
+                                ui.add_space(6.0);
+                                Self::caption(ui, "You can reopen this from ? in the toolbar.");
+                            }
+                        });
+                    });
+                ui.painter().set(
+                    bg,
+                    skin::panel(
+                        frame.response.rect,
+                        theme::panelhi_top(),
+                        theme::panelhi_bot(),
+                        theme::edge(),
+                    ),
+                );
+            });
+
+        if close {
+            if !self.settings.knob_guide_seen {
+                self.settings.knob_guide_seen = true;
+                self.save_settings();
+            }
+        } else {
+            self.knob_guide = Some(g);
+        }
+    }
+
     fn caption(ui: &mut egui::Ui, text: &str) {
         ui.label(RichText::new(text).size(10.0).color(theme::caption()));
     }
@@ -1797,6 +1961,13 @@ impl eframe::App for VesperApp {
                         }
                         if self.pill(ui, "+ By IP", false).clicked() {
                             self.dialog = Some(Dialog::ByIp);
+                        }
+                        if self
+                            .pill(ui, "?", false)
+                            .on_hover_text("How the dials work")
+                            .clicked()
+                        {
+                            self.knob_guide = Some(KnobGuide::new());
                         }
                         // theme picker
                         let before = self.theme_idx;
@@ -2487,6 +2658,11 @@ impl eframe::App for VesperApp {
         let mut dlg_acts: Vec<Act> = Vec::new();
         self.dialog_ui(ctx, &mut dlg_acts);
         acts.extend(dlg_acts);
+        // The dials guide waits for the splash to finish, so the very first
+        // thing a new user sees isn't a pop-up over the launch animation.
+        if self.dialog.is_none() && self.splash.handover() >= 1.0 {
+            self.knob_guide_ui(ctx);
+        }
 
         for act in acts {
             self.act(ctx, act);
