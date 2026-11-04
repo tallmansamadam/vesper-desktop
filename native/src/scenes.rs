@@ -191,12 +191,12 @@ pub fn apply_scene(ctrl: &Controller, lights: &[Arc<Light>], sc: &Scene, shuffle
     } else {
         Vec::new()
     };
-    for (i, l) in lights.iter().enumerate() {
+    ctrl.each(lights, |i, l| {
         match sc.kind {
             Kind::White => ctrl.set_white(l, sc.pct, sc.kelvin, duration),
             Kind::Color => set_rgb_at(ctrl, l, sc.rgb, sc.pct, duration),
             Kind::Palette => set_rgb_at(ctrl, l, assign[i], sc.pct, duration),
         }
         ctrl.set_power(l, true, duration);
-    }
+    });
 }

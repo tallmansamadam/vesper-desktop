@@ -100,10 +100,10 @@ pub fn apply(ctrl: &Controller, lights: &[Arc<Light>], sc: &CustomScene, shuffle
         fastrand::Rng::new().shuffle(&mut order);
     }
     let bri = (sc.pct.clamp(0.0, 100.0) / 100.0 * 65535.0) as u16;
-    for (i, l) in lights.iter().enumerate() {
+    ctrl.each(lights, |i, l| {
         let c = sc.colors[order[i % order.len()]];
         let hsbk = rgb_to_hsbk(c[0], c[1], c[2], 3500);
         ctrl.set_color(l, hsbk[0], hsbk[1], bri, l.hsbk()[3], 800);
         ctrl.set_power(l, true, 800);
-    }
+    });
 }

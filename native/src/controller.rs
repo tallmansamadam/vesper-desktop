@@ -173,12 +173,21 @@ impl Controller {
                 .iter()
                 .map(|k| {
                     s.spawn(move || match k.vendor {
-                        Vendor::Lifx => self.lifx.probe_target(&k.ip).map(|t| {
-                            let l = self.lifx.light_for(&k.ip, t);
-                            l.set_label(&k.label);
-                            self.lifx.refresh(&l);
-                            l
-                        }),
+                        Vendor::Lifx => self
+                            .lifx
+                            .probe_target(&k.ip)
+                            .map(|t| {
+                                let l = self.lifx.light_for(&k.ip, t);
+                                self.lifx.refresh(&l);
+                                l
+                            })
+                            // Deaf to unicast? Ask by its known serial.
+                            .or_else(|| self.lifx.probe_known(&k.ip, &k.id))
+                            .inspect(|l| {
+                                if l.label() == l.id {
+                                    l.set_label(&k.label);
+                                }
+                            }),
                         Vendor::Wiz => self.wiz.probe(&k.ip),
                         Vendor::Yeelight => self.yeelight.probe(&k.ip),
                         Vendor::Govee => self.govee.probe(&k.ip),
@@ -207,6 +216,19 @@ impl Controller {
             (a.join().unwrap_or_default(), b.join().unwrap_or_default())
         });
         merge(found, seen)
+    }
+
+    /// Run `f` on every light at once, returning when all are done. Scenes
+    /// and all-lights commands go through here so the room changes together
+    /// rather than bulb by bulb, and one slow or unplugged bulb only delays
+    /// itself.
+    pub fn each(&self, lights: &[Arc<Light>], f: impl Fn(usize, &Arc<Light>) + Sync) {
+        std::thread::scope(|s| {
+            for (i, l) in lights.iter().enumerate() {
+                let f = &f;
+                s.spawn(move || f(i, l));
+            }
+        });
     }
 
     pub fn set_rgb(&self, l: &Light, r: u8, g: u8, b: u8, d: u32) {

@@ -62,9 +62,7 @@ fn power(shared: &Shared, tx: &Sender<Msg>, ctx: &egui::Context, target: Option<
     let tx = tx.clone();
     let ctx = ctx.clone();
     std::thread::spawn(move || {
-        for l in &lights {
-            ctrl.set_power(l, on, 400);
-        }
+        ctrl.each(&lights, |_, l| ctrl.set_power(l, on, 400));
         let _ = tx.send(Msg::Status(
             format!("All lights {}.", if on { "on" } else { "off" }),
             false,

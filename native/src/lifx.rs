@@ -5,8 +5,8 @@
 //! and screen-sync. Discovery binds per-interface and sends subnet-directed
 //! broadcasts so it survives a VPN owning the default route.
 
-use std::collections::HashMap;
-use std::net::UdpSocket;
+use std::collections::{HashMap, HashSet};
+use std::net::{Ipv4Addr, UdpSocket};
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -70,10 +70,33 @@ fn serial_hex(target: u64) -> String {
     b[..6].iter().map(|x| format!("{x:02x}")).collect()
 }
 
+/// The inverse of `serial_hex`: a light's id back to its 64-bit target.
+pub fn target_from_serial(serial: &str) -> Option<u64> {
+    if serial.len() != 12 {
+        return None;
+    }
+    let mut b = [0u8; 8];
+    for (i, byte) in b.iter_mut().take(6).enumerate() {
+        *byte = u8::from_str_radix(serial.get(i * 2..i * 2 + 2)?, 16).ok()?;
+    }
+    Some(u64::from_le_bytes(b))
+}
+
+/// The /24 broadcast address for a light's subnet, as a send destination.
+fn subnet_broadcast(ip: &str) -> Option<String> {
+    ip.parse::<Ipv4Addr>().ok().map(|a| directed_broadcast(a).to_string())
+}
+
 pub struct LifxLan {
     sock: UdpSocket,
     seq: AtomicU8,
-    rx: Mutex<()>, // serialise reply/ack waits on the shared socket
+    /// Bulbs that stopped hearing unicast. A known LIFX firmware failure:
+    /// the bulb still answers broadcasts (so discovery finds it) but ignores
+    /// packets sent to its own address, so every command to it times out.
+    /// LIFX packets carry the target serial, so a broadcast addressed to one
+    /// bulb is acted on by that bulb alone - these get their commands that
+    /// way too. Learned per run; seen here on 2 of 8 bulbs at once.
+    deaf: Mutex<HashSet<u64>>,
 }
 
 impl LifxLan {
@@ -84,8 +107,12 @@ impl LifxLan {
         Ok(LifxLan {
             sock,
             seq: AtomicU8::new(0),
-            rx: Mutex::new(()),
+            deaf: Mutex::new(HashSet::new()),
         })
+    }
+
+    fn is_deaf(&self, target: u64) -> bool {
+        self.deaf.lock().map(|d| d.contains(&target)).unwrap_or(false)
     }
 
     fn next_seq(&self) -> u8 {
@@ -161,9 +188,8 @@ impl LifxLan {
     /// Used by "add by IP" when broadcast discovery can't reach it (other
     /// subnet, AP isolation, VPN), and to reconnect remembered bulbs.
     ///
-    /// Uses its own socket rather than the shared command one: a bulb that's
-    /// switched off costs the full timeout, and holding the command lock for
-    /// that long would stall every power/colour change meanwhile.
+    /// Uses its own socket, like `exchange`, so a bulb that's switched off
+    /// costs only its own timeout and never delays commands to the others.
     pub fn probe_target(&self, ip: &str) -> Option<u64> {
         let seq = self.next_seq();
         let pkt = make_packet(MSG_GET_SERVICE, &[], 0, false, true, false, seq);
@@ -205,54 +231,75 @@ impl LifxLan {
 
     // -- low-level send ----------------------------------------------------
 
+    /// Send `pkt` to the light and wait for the reply of type `want` matching
+    /// its sequence, retrying on loss. Each exchange gets its own socket, so
+    /// any number can be in flight at once: a scene reaches every bulb
+    /// together instead of queueing behind each one's round trip - and a bulb
+    /// that has stopped answering no longer holds up all the others.
+    ///
+    /// Healthy bulbs answer in ~10 ms (90% within 25 ms), so 200 ms per try
+    /// is ample, and five tries ride out occasional loss. If the first try
+    /// gets nothing, later ones also go out as a broadcast addressed to the
+    /// bulb (see `deaf`), and a bulb that answers only that way is
+    /// remembered so it gets the broadcast from the first try next time. A
+    /// bulb that's off costs one second, and only itself.
+    fn exchange(&self, light: &Light, pkt: &[u8], seq: u8, want: u16) -> Option<Vec<u8>> {
+        let sock = UdpSocket::bind("0.0.0.0:0").ok()?;
+        sock.set_read_timeout(Some(Duration::from_millis(40))).ok()?;
+        let _ = sock.set_broadcast(true);
+        let bcast = subnet_broadcast(&light.ip);
+        let was_deaf = self.is_deaf(light.target);
+        let mut buf = [0u8; 1024];
+        for attempt in 0..5 {
+            let _ = sock.send_to(pkt, (light.ip.as_str(), PORT));
+            if was_deaf || attempt > 0 {
+                if let Some(b) = &bcast {
+                    let _ = sock.send_to(pkt, (b.as_str(), PORT));
+                }
+            }
+            let deadline = Instant::now() + Duration::from_millis(200);
+            while Instant::now() < deadline {
+                // Timeouts (and Windows' ICMP-triggered resets) just mean
+                // keep waiting until the deadline.
+                if let Ok((n, _)) = sock.recv_from(&mut buf) {
+                    if let Some((t, s, m)) = parse_header(&buf[..n]) {
+                        if m == want && s == seq && t == light.target {
+                            if attempt > 0 && !was_deaf && bcast.is_some() {
+                                if let Ok(mut d) = self.deaf.lock() {
+                                    d.insert(light.target);
+                                }
+                            }
+                            return Some(buf[..n].to_vec());
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Ask a remembered bulb for its state, by its known serial - which,
+    /// unlike `probe_target`, also reaches a bulb that's deaf to unicast.
+    /// Returns the bulb, refreshed, if it answered.
+    pub fn probe_known(&self, ip: &str, serial: &str) -> Option<Arc<Light>> {
+        let l = self.light_for(ip, target_from_serial(serial)?);
+        self.send_query(&l, MSG_GET, MSG_STATE)?;
+        self.refresh(&l);
+        Some(l)
+    }
+
     /// Send with ack_required, retrying on loss. Returns whether the bulb
     /// acknowledged (callers may ignore; the diagnostic mode reports it).
     fn send_ack(&self, light: &Light, msg_type: u16, payload: &[u8]) -> bool {
         let seq = self.next_seq();
         let pkt = make_packet(msg_type, payload, light.target, false, false, true, seq);
-        let _guard = self.rx.lock().unwrap();
-        let mut buf = [0u8; 1024];
-        for _ in 0..3 {
-            let _ = self.sock.send_to(&pkt, (light.ip.as_str(), PORT));
-            let deadline = Instant::now() + Duration::from_millis(600);
-            while Instant::now() < deadline {
-                match self.sock.recv_from(&mut buf) {
-                    Ok((n, _)) => {
-                        if let Some((t, s, m)) = parse_header(&buf[..n]) {
-                            if m == MSG_ACK && s == seq && t == light.target {
-                                return true;
-                            }
-                        }
-                    }
-                    Err(_) => break,
-                }
-            }
-        }
-        false
+        self.exchange(light, &pkt, seq, MSG_ACK).is_some()
     }
 
     fn send_query(&self, light: &Light, msg_type: u16, want: u16) -> Option<Vec<u8>> {
         let seq = self.next_seq();
         let pkt = make_packet(msg_type, &[], light.target, false, true, false, seq);
-        let _guard = self.rx.lock().unwrap();
-        let mut buf = [0u8; 1024];
-        for _ in 0..3 {
-            let _ = self.sock.send_to(&pkt, (light.ip.as_str(), PORT));
-            let deadline = Instant::now() + Duration::from_millis(600);
-            while Instant::now() < deadline {
-                match self.sock.recv_from(&mut buf) {
-                    Ok((n, _)) => {
-                        if let Some((t, s, m)) = parse_header(&buf[..n]) {
-                            if m == want && s == seq && t == light.target {
-                                return Some(buf[..n].to_vec());
-                            }
-                        }
-                    }
-                    Err(_) => break,
-                }
-            }
-        }
-        None
+        self.exchange(light, &pkt, seq, want)
     }
 
     // -- provider API ------------------------------------------------------
@@ -321,6 +368,11 @@ impl LifxLan {
             MSG_SET_COLOR, &payload, light.target, false, false, false, self.next_seq(),
         );
         let _ = self.sock.send_to(&pkt, (light.ip.as_str(), PORT));
+        if self.is_deaf(light.target) {
+            if let Some(bc) = subnet_broadcast(&light.ip) {
+                let _ = self.sock.send_to(&pkt, (bc.as_str(), PORT));
+            }
+        }
         light.set_hsbk([h, s, b, k.clamp(KELVIN_MIN, KELVIN_MAX)]);
     }
 

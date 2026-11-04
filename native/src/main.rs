@@ -622,9 +622,7 @@ impl VesperApp {
         std::thread::spawn(move || {
             const STEPS: u32 = 60;
             let dt = (rise_min * 60.0 / STEPS as f32).max(0.05);
-            for l in &lights {
-                ctrl.set_power(l, true, 1000);
-            }
+            ctrl.each(&lights, |_, l| ctrl.set_power(l, true, 1000));
             for i in 0..=STEPS {
                 if flag.load(Ordering::Relaxed) {
                     return;
@@ -632,9 +630,9 @@ impl VesperApp {
                 let t = i as f32 / STEPS as f32;
                 let pct = 2.0 + 98.0 * t; // 2% -> 100%
                 let kelvin = (2000.0 + 2500.0 * t) as u16; // amber -> soft white
-                for l in &lights {
-                    ctrl.set_white(l, pct, kelvin, (dt * 1000.0) as u32);
-                }
+                ctrl.each(&lights, |_, l| {
+                    ctrl.set_white(l, pct, kelvin, (dt * 1000.0) as u32)
+                });
                 let _ = tx.send(Msg::Status(format!("Sunrise … {}%", pct as i32), false));
                 let _ = tx.send(Msg::Refresh);
                 ctx.request_repaint();
@@ -740,11 +738,7 @@ impl VesperApp {
                 self.spawn_cmd(
                     ctx,
                     format!("All lights {}.", if on { "on" } else { "off" }),
-                    move |c| {
-                        for l in &lights {
-                            c.set_power(l, on, 400);
-                        }
-                    },
+                    move |c| c.each(&lights, |_, l| c.set_power(l, on, 400)),
                 );
             }
             Act::PairHue => {
@@ -1007,9 +1001,7 @@ impl VesperApp {
                 // at the last frame sent, not necessarily what stuck.
                 let lights = self.lights.clone();
                 self.spawn_cmd(ctx, String::new(), move |c| {
-                    for l in &lights {
-                        c.refresh(l);
-                    }
+                    c.each(&lights, |_, l| c.refresh(l))
                 });
             }
             Act::Power(l, on) => {
@@ -1041,11 +1033,7 @@ impl VesperApp {
                 self.spawn_cmd(
                     ctx,
                     format!("Master brightness {}%.", v as i32),
-                    move |c| {
-                        for l in &lights {
-                            c.set_brightness(l, v, 300);
-                        }
-                    },
+                    move |c| c.each(&lights, |_, l| c.set_brightness(l, v, 300)),
                 );
             }
         }
@@ -1858,9 +1846,8 @@ impl eframe::App for VesperApp {
                 let lights = self.lights.clone();
                 self.set_status("Sleep timer: fading everything off …", false);
                 self.spawn_cmd(ctx, "Sleep timer: lights off.".into(), move |c| {
-                    for l in &lights {
-                        c.set_power(l, false, 3000); // 3s fade where the vendor supports it
-                    }
+                    // 3s fade where the vendor supports it
+                    c.each(&lights, |_, l| c.set_power(l, false, 3000));
                 });
             } else {
                 ctx.request_repaint_after(Duration::from_millis(500));
@@ -2720,9 +2707,7 @@ fn main() -> eframe::Result<()> {
         let ctrl = Controller::new(&config::dir());
         let lights = ctrl.discover_with_known(&known::load());
         if name.eq_ignore_ascii_case("All Off") || name.eq_ignore_ascii_case("off") {
-            for l in &lights {
-                ctrl.set_power(l, false, 400);
-            }
+            ctrl.each(&lights, |_, l| ctrl.set_power(l, false, 400));
         } else if let Some(sc) = SCENES.iter().find(|s| s.name == name) {
             apply_scene(&ctrl, &lights, sc, true);
         } else if let Some(cs) =
@@ -2928,6 +2913,67 @@ fn main() -> eframe::Result<()> {
             }
         }
         let path = args.get(2).cloned().unwrap_or_else(|| "rejoin.txt".into());
+        let _ = std::fs::write(path, out);
+        return Ok(());
+    }
+
+    // Headless check of scene latency without visibly changing anything:
+    // `vesper.exe --latency [out.txt]` re-sends every bulb its own colour,
+    // twice each (a scene sends colour then power), first one bulb after
+    // another as scenes used to, then all at once.
+    if args.get(1).map(String::as_str) == Some("--latency") {
+        let ctrl = Controller::new(&config::dir());
+        let lights: Vec<Arc<Light>> = ctrl
+            .reconnect(&known::load())
+            .into_iter()
+            .filter(|l| l.vendor == crate::light::Vendor::Lifx)
+            .collect();
+        let mut out = format!("{} LIFX light(s)\n", lights.len());
+        // Third round: a bulb that's stopped answering (switched off at the
+        // wall since it was listed), mid-list - the case that hurt most.
+        let mut with_dead = lights.clone();
+        with_dead.insert(
+            lights.len() / 2,
+            ctrl.lifx.light_for("10.0.0.250", 0x0000_d073_d500_beef),
+        );
+        for round in 0..3 {
+            let lights = if round == 2 { &with_dead } else { &lights };
+            let t = Instant::now();
+            for l in lights {
+                ctrl.lifx.ping_ack(l);
+                ctrl.lifx.ping_ack(l);
+            }
+            let seq = t.elapsed();
+            let t = Instant::now();
+            let lifx = &ctrl.lifx;
+            // (acked, when this bulb was done)
+            let res: Vec<(bool, Duration)> = std::thread::scope(|s| {
+                let hs: Vec<_> = lights
+                    .iter()
+                    .map(|l| {
+                        s.spawn(move || {
+                            let ok = lifx.ping_ack(l) & lifx.ping_ack(l);
+                            (ok, t.elapsed())
+                        })
+                    })
+                    .collect();
+                hs.into_iter()
+                    .map(|h| h.join().unwrap_or((false, Duration::ZERO)))
+                    .collect()
+            });
+            let live_done = res.iter().filter(|r| r.0).map(|r| r.1).max();
+            out.push_str(&format!(
+                "round {}{}: one at a time {:?} | all at once: answering bulbs done in {:?} \
+                 | acked {}/{}\n",
+                round + 1,
+                if round == 2 { " (+1 dead bulb)" } else { "" },
+                seq,
+                live_done.unwrap_or_default(),
+                res.iter().filter(|r| r.0).count(),
+                res.len()
+            ));
+        }
+        let path = args.get(2).cloned().unwrap_or_else(|| "latency.txt".into());
         let _ = std::fs::write(path, out);
         return Ok(());
     }
